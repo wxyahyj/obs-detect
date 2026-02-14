@@ -489,6 +489,7 @@ void *detect_filter_create(obs_data_t *settings, obs_source_t *source)
 	tf->source = source;
 	tf->texrender = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
 	tf->lastDetectedObjectId = -1;
+	tf->last_inference_time = std::chrono::steady_clock::time_point();
 
 	detect_filter_update(tf, settings);
 
@@ -529,6 +530,14 @@ void detect_filter_video_tick(void *data, float seconds)
 		return;
 	}
 
+	auto now = std::chrono::steady_clock::now();
+	auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+		now - tf->last_inference_time).count();
+	
+	if (elapsed_ms < tf->MIN_INFERENCE_INTERVAL_MS) {
+		return;
+	}
+
 	cv::Mat imageBGRA;
 	{
 		std::unique_lock<std::mutex> lock(tf->inputBGRALock, std::try_to_lock);
@@ -561,6 +570,7 @@ void detect_filter_video_tick(void *data, float seconds)
 			return;
 		}
 		objects = tf->onnxruntimemodel->inference(inferenceFrame);
+		tf->last_inference_time = now;
 	} catch (const Ort::Exception &e) {
 		obs_log(LOG_ERROR, "ONNXRuntime Exception: %s", e.what());
 	} catch (const std::exception &e) {

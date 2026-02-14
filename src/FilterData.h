@@ -5,14 +5,9 @@
 #include <opencv2/core.hpp>
 #include <mutex>
 #include <memory>
+#include <chrono>
 #include "ort-model/ONNXRuntimeModel.h"
 
-/**
-  * @brief The filter_data struct
-  *
-  * This struct is used to store the base data needed for ORT filters.
-  *
-*/
 struct filter_data {
 	std::string useGPU;
 	uint32_t numThreads;
@@ -45,6 +40,9 @@ struct filter_data {
 
 	std::unique_ptr<ONNXRuntimeModel> onnxruntimemodel;
 	std::vector<std::string> classNames;
+
+	std::chrono::steady_clock::time_point last_inference_time;
+	static constexpr int MIN_INFERENCE_INTERVAL_MS = 100;
 
 #if _WIN32
 	std::wstring modelFilepath;
