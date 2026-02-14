@@ -15,7 +15,7 @@
             "label": "Pre-Built obs-deps",
             "hashes": {
                 "macos": "6faaa5737fc80087e13bd5cdff4df820359fff7bef714a59e7170fdab8ce36f",
-                "windows-x64": "2B14CBF46064939D56A57F95D22B80D18B2A982C8bd6A2D30044452B8E99B1a"
+                "windows-x64": "2b14CBF46064939D56A57F952D22B80d18B2a982C8bd6A2D30044452b8E99B1a"
             }
         },
         "qt6": {
