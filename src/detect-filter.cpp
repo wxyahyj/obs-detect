@@ -300,6 +300,11 @@ void detect_filter_update(void *data, obs_data_t *settings)
 
 	struct detect_filter *tf = reinterpret_cast<detect_filter *>(data);
 
+	if (!tf) {
+		obs_log(LOG_ERROR, "Filter data is null");
+		return;
+	}
+
 	// 在更新设置前临时禁用推理以避免并发问题
 	bool was_inference_enabled = tf->inferenceEnabled;
 	tf->inferenceEnabled = false; // 先停止推理
@@ -409,20 +414,14 @@ void detect_filter_update(void *data, obs_data_t *settings)
 					obs_log(LOG_ERROR,
 						"JSON file does not contain 'labels' field");
 					tf->isDisabled = true;
-					{
-						std::unique_lock<std::mutex> lock(tf->modelMutex);
-						tf->onnxruntimemodel.reset();
-					}
+					tf->onnxruntimemodel.reset();
 					return;
 				}
 			} else {
 				obs_log(LOG_ERROR, "Failed to open JSON file: %s",
 					labelsFilepath.c_str());
 				tf->isDisabled = true;
-				{
-					std::unique_lock<std::mutex> lock(tf->modelMutex);
-					tf->onnxruntimemodel.reset();
-				}
+				tf->onnxruntimemodel.reset();
 				return;
 			}
 		} else if (tf->modelSize == FACE_DETECT_MODEL_SIZE) {
@@ -432,33 +431,27 @@ void detect_filter_update(void *data, obs_data_t *settings)
 
 		try {
 			// 确保在重置模型时没有其他线程在使用它
-			{
-				std::unique_lock<std::mutex> lock(tf->modelMutex);
-				if (tf->onnxruntimemodel) {
-					tf->onnxruntimemodel.reset();
-				}
-				if (tf->modelSize == FACE_DETECT_MODEL_SIZE) {
-					tf->onnxruntimemodel = std::make_unique<yunet::YuNetONNX>(
-						tf->modelFilepath, tf->numThreads, 50, tf->numThreads,
-						tf->useGPU, onnxruntime_device_id_,
-						onnxruntime_use_parallel_, nms_th_, tf->conf_threshold);
-				} else {
-					tf->onnxruntimemodel =
-						std::make_unique<edgeyolo_cpp::EdgeYOLOONNXRuntime>(
-							tf->modelFilepath, tf->numThreads, num_classes_,
-							tf->numThreads, tf->useGPU, onnxruntime_device_id_,
-							onnxruntime_use_parallel_, nms_th_,
-							tf->conf_threshold);
-				}
+			if (tf->onnxruntimemodel) {
+				tf->onnxruntimemodel.reset();
+			}
+			if (tf->modelSize == FACE_DETECT_MODEL_SIZE) {
+				tf->onnxruntimemodel = std::make_unique<yunet::YuNetONNX>(
+					tf->modelFilepath, tf->numThreads, 50, tf->numThreads,
+					tf->useGPU, onnxruntime_device_id_,
+					onnxruntime_use_parallel_, nms_th_, tf->conf_threshold);
+			} else {
+				tf->onnxruntimemodel =
+					std::make_unique<edgeyolo_cpp::EdgeYOLOONNXRuntime>(
+						tf->modelFilepath, tf->numThreads, num_classes_,
+						tf->numThreads, tf->useGPU, onnxruntime_device_id_,
+						onnxruntime_use_parallel_, nms_th_,
+						tf->conf_threshold);
 			}
 			obs_data_set_string(settings, "error", "");
 		} catch (const std::exception &e) {
 			obs_log(LOG_ERROR, "Failed to load model: %s", e.what());
 			tf->isDisabled = true;
-			{
-				std::unique_lock<std::mutex> lock(tf->modelMutex);
-				tf->onnxruntimemodel.reset();
-			}
+			tf->onnxruntimemodel.reset();
 			return;
 		}
 	} else {
@@ -467,6 +460,7 @@ void detect_filter_update(void *data, obs_data_t *settings)
 	}
 
 	if (tf->onnxruntimemodel) {
+		std::unique_lock<std::mutex> lock(tf->modelMutex);
 		tf->onnxruntimemodel->setBBoxConfThresh(tf->conf_threshold);
 	}
 
@@ -494,20 +488,24 @@ void detect_filter_update(void *data, obs_data_t *settings)
 	
 	// 恢复推理启用状态
 	tf->inferenceEnabled = new_inference_enabled;
-}
+	}
 
 void detect_filter_activate(void *data)
 {
 	obs_log(LOG_INFO, "Detect filter activated");
 	struct detect_filter *tf = reinterpret_cast<detect_filter *>(data);
-	tf->isDisabled = false;
+	if (tf) {
+		tf->isDisabled = false;
+	}
 }
 
 void detect_filter_deactivate(void *data)
 {
 	obs_log(LOG_INFO, "Detect filter deactivated");
 	struct detect_filter *tf = reinterpret_cast<detect_filter *>(data);
-	tf->isDisabled = true;
+	if (tf) {
+		tf->isDisabled = true;
+	}
 }
 
 /**                   FILTER CORE                     */
@@ -524,6 +522,22 @@ void *detect_filter_create(obs_data_t *settings, obs_source_t *source)
 	tf->last_inference_time = std::chrono::steady_clock::time_point();
 	tf->inferenceEnabled = false;
 
+	// 初始化默认值
+	tf->preview = true;
+	tf->conf_threshold = 0.5f;
+	tf->objectCategory = -1;
+	tf->saveDetectionsPath = "";
+	tf->crop_enabled = false;
+	tf->crop_left = 0;
+	tf->crop_right = 0;
+	tf->crop_top = 0;
+	tf->crop_bottom = 0;
+	tf->minAreaThreshold = 0;
+	tf->useGPU = "CPU";
+	tf->numThreads = 1;
+	tf->modelSize = "small";
+	tf->isDisabled = false;
+
 	detect_filter_update(tf, settings);
 
 	return tf;
@@ -539,7 +553,9 @@ void detect_filter_destroy(void *data)
 		tf->isDisabled = true;
 
 		obs_enter_graphics();
-		gs_texrender_destroy(tf->texrender);
+		if (tf->texrender) {
+			gs_texrender_destroy(tf->texrender);
+		}
 		if (tf->stagesurface) {
 			gs_stagesurface_destroy(tf->stagesurface);
 		}
@@ -555,6 +571,10 @@ void detect_filter_video_tick(void *data, float seconds)
 	UNUSED_PARAMETER(seconds);
 
 	struct detect_filter *tf = reinterpret_cast<detect_filter *>(data);
+
+	if (!tf) {
+		return;
+	}
 
 	static bool last_inference_state = false;
 	if (last_inference_state != tf->inferenceEnabled) {
