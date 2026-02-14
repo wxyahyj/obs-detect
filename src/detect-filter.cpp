@@ -533,6 +533,12 @@ void detect_filter_video_tick(void *data, float seconds)
 
 	struct detect_filter *tf = reinterpret_cast<detect_filter *>(data);
 
+	static bool last_inference_state = false;
+	if (last_inference_state != tf->inferenceEnabled) {
+		last_inference_state = tf->inferenceEnabled;
+		obs_log(LOG_INFO, "Inference state changed to: %s", tf->inferenceEnabled ? "ENABLED" : "DISABLED");
+	}
+
 	if (tf->isDisabled || !tf->onnxruntimemodel) {
 		return;
 	}
@@ -556,12 +562,16 @@ void detect_filter_video_tick(void *data, float seconds)
 	}
 
 	bool inference_ran = false;
+	bool drew_boxes = false;
+	
 	if (tf->inferenceEnabled) {
 		auto now = std::chrono::steady_clock::now();
 		auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
 			now - tf->last_inference_time).count();
 		
 		if (elapsed_ms >= tf->MIN_INFERENCE_INTERVAL_MS) {
+			obs_log(LOG_INFO, "Running inference...");
+			
 			cv::Mat inferenceFrame;
 
 			cv::Rect cropRect(0, 0, imageBGRA.cols, imageBGRA.rows);
@@ -579,9 +589,12 @@ void detect_filter_video_tick(void *data, float seconds)
 			try {
 				std::unique_lock<std::mutex> lock(tf->modelMutex, std::try_to_lock);
 				if (lock.owns_lock()) {
+					tf->onnxruntimemodel->setBBoxConfThresh(0.0f);
 					objects = tf->onnxruntimemodel->inference(inferenceFrame);
 					tf->last_inference_time = now;
 					inference_ran = true;
+
+					obs_log(LOG_INFO, "Inference returned %d objects (before filtering)", objects.size());
 
 					if (tf->crop_enabled) {
 						for (Object &obj : objects) {
@@ -607,16 +620,6 @@ void detect_filter_video_tick(void *data, float seconds)
 						}
 					}
 
-					if (tf->minAreaThreshold > 0) {
-						std::vector<Object> filtered_objects;
-						for (const Object &obj : objects) {
-							if (obj.rect.area() > (float)tf->minAreaThreshold) {
-								filtered_objects.push_back(obj);
-							}
-						}
-						objects = filtered_objects;
-					}
-
 					if (tf->objectCategory != -1) {
 						std::vector<Object> filtered_objects;
 						for (const Object &obj : objects) {
@@ -625,6 +628,7 @@ void detect_filter_video_tick(void *data, float seconds)
 							}
 						}
 						objects = filtered_objects;
+						obs_log(LOG_INFO, "After category filter: %d objects", objects.size());
 					}
 
 					if (!tf->saveDetectionsPath.empty()) {
@@ -656,6 +660,8 @@ void detect_filter_video_tick(void *data, float seconds)
 						}
 						if (objects.size() > 0) {
 							draw_objects(frame, objects, tf->classNames);
+							drew_boxes = true;
+							obs_log(LOG_INFO, "Drew %d boxes on frame", objects.size());
 						}
 
 						std::lock_guard<std::mutex> lock_output(tf->outputLock);
@@ -663,23 +669,27 @@ void detect_filter_video_tick(void *data, float seconds)
 					}
 
 					if (objects.size() > 0) {
-						obs_log(LOG_DEBUG, "Detected %d objects", objects.size());
+						obs_log(LOG_INFO, "Final detected %d objects:", objects.size());
 						for (const auto &obj : objects) {
-							obs_log(LOG_DEBUG, "  - %s (%.2f) at [%.0f, %.0f, %.0f, %.0f]",
+							obs_log(LOG_INFO, "  - %s (%.2f) at [%.0f, %.0f, %.0f, %.0f]",
 								tf->classNames[obj.label].c_str(), obj.prob,
 								obj.rect.x, obj.rect.y, obj.rect.width, obj.rect.height);
 						}
+					} else {
+						obs_log(LOG_INFO, "No objects detected");
 					}
+				} else {
+					obs_log(LOG_WARNING, "Could not acquire model mutex, skipping inference");
 				}
 			} catch (const Ort::Exception &e) {
 				obs_log(LOG_ERROR, "ONNXRuntime Exception: %s", e.what());
 			} catch (const std::exception &e) {
-				obs_log(LOG_ERROR, "%s", e.what());
+				obs_log(LOG_ERROR, "Exception: %s", e.what());
 			}
 		}
 	}
 
-	if (!inference_ran && tf->preview) {
+	if ((!inference_ran || !drew_boxes) && tf->preview) {
 		std::lock_guard<std::mutex> lock(tf->outputLock);
 		tf->outputPreviewBGRA = imageBGRA.clone();
 	}
