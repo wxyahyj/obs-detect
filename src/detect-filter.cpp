@@ -300,12 +300,14 @@ void detect_filter_update(void *data, obs_data_t *settings)
 
 	struct detect_filter *tf = reinterpret_cast<detect_filter *>(data);
 
+	// 在更新设置前临时禁用推理以避免并发问题
+	bool was_inference_enabled = tf->inferenceEnabled;
+	tf->inferenceEnabled = false; // 先停止推理
 	tf->isDisabled = true;
 
 	bool new_inference_enabled = obs_data_get_bool(settings, "inference_enabled");
-	if (new_inference_enabled != tf->inferenceEnabled) {
-		tf->inferenceEnabled = new_inference_enabled;
-		obs_log(LOG_INFO, "Inference %s", tf->inferenceEnabled ? "enabled" : "disabled");
+	if (new_inference_enabled != was_inference_enabled) {
+		obs_log(LOG_INFO, "Inference %s", new_inference_enabled ? "enabled" : "disabled");
 	}
 
 	tf->preview = obs_data_get_bool(settings, "preview");
@@ -407,14 +409,20 @@ void detect_filter_update(void *data, obs_data_t *settings)
 					obs_log(LOG_ERROR,
 						"JSON file does not contain 'labels' field");
 					tf->isDisabled = true;
-					tf->onnxruntimemodel.reset();
+					{
+						std::unique_lock<std::mutex> lock(tf->modelMutex);
+						tf->onnxruntimemodel.reset();
+					}
 					return;
 				}
 			} else {
 				obs_log(LOG_ERROR, "Failed to open JSON file: %s",
 					labelsFilepath.c_str());
 				tf->isDisabled = true;
-				tf->onnxruntimemodel.reset();
+				{
+					std::unique_lock<std::mutex> lock(tf->modelMutex);
+					tf->onnxruntimemodel.reset();
+				}
 				return;
 			}
 		} else if (tf->modelSize == FACE_DETECT_MODEL_SIZE) {
@@ -423,27 +431,34 @@ void detect_filter_update(void *data, obs_data_t *settings)
 		}
 
 		try {
-			if (tf->onnxruntimemodel) {
-				tf->onnxruntimemodel.reset();
-			}
-			if (tf->modelSize == FACE_DETECT_MODEL_SIZE) {
-				tf->onnxruntimemodel = std::make_unique<yunet::YuNetONNX>(
-					tf->modelFilepath, tf->numThreads, 50, tf->numThreads,
-					tf->useGPU, onnxruntime_device_id_,
-					onnxruntime_use_parallel_, nms_th_, tf->conf_threshold);
-			} else {
-				tf->onnxruntimemodel =
-					std::make_unique<edgeyolo_cpp::EdgeYOLOONNXRuntime>(
-						tf->modelFilepath, tf->numThreads, num_classes_,
-						tf->numThreads, tf->useGPU, onnxruntime_device_id_,
-						onnxruntime_use_parallel_, nms_th_,
-						tf->conf_threshold);
+			// 确保在重置模型时没有其他线程在使用它
+			{
+				std::unique_lock<std::mutex> lock(tf->modelMutex);
+				if (tf->onnxruntimemodel) {
+					tf->onnxruntimemodel.reset();
+				}
+				if (tf->modelSize == FACE_DETECT_MODEL_SIZE) {
+					tf->onnxruntimemodel = std::make_unique<yunet::YuNetONNX>(
+						tf->modelFilepath, tf->numThreads, 50, tf->numThreads,
+						tf->useGPU, onnxruntime_device_id_,
+						onnxruntime_use_parallel_, nms_th_, tf->conf_threshold);
+				} else {
+					tf->onnxruntimemodel =
+						std::make_unique<edgeyolo_cpp::EdgeYOLOONNXRuntime>(
+							tf->modelFilepath, tf->numThreads, num_classes_,
+							tf->numThreads, tf->useGPU, onnxruntime_device_id_,
+							onnxruntime_use_parallel_, nms_th_,
+							tf->conf_threshold);
+				}
 			}
 			obs_data_set_string(settings, "error", "");
 		} catch (const std::exception &e) {
 			obs_log(LOG_ERROR, "Failed to load model: %s", e.what());
 			tf->isDisabled = true;
-			tf->onnxruntimemodel.reset();
+			{
+				std::unique_lock<std::mutex> lock(tf->modelMutex);
+				tf->onnxruntimemodel.reset();
+			}
 			return;
 		}
 	} else {
@@ -476,6 +491,9 @@ void detect_filter_update(void *data, obs_data_t *settings)
 	if (!reinitialize) {
 		tf->isDisabled = false;
 	}
+	
+	// 恢复推理启用状态
+	tf->inferenceEnabled = new_inference_enabled;
 }
 
 void detect_filter_activate(void *data)
@@ -717,6 +735,11 @@ void detect_filter_video_render(void *data, gs_effect_t *_effect)
 
 	struct detect_filter *tf = reinterpret_cast<detect_filter *>(data);
 
+	if (!tf) {
+		obs_source_skip_video_filter(nullptr);
+		return;
+	}
+
 	if (!tf->preview) {
 		obs_source_skip_video_filter(tf->source);
 		return;
@@ -781,20 +804,23 @@ void detect_filter_video_render(void *data, gs_effect_t *_effect)
 
 	cv::cvtColor(frameBGR, outputBGRA, cv::COLOR_BGR2BGRA);
 
-	gs_texture_t *tex = gs_texture_create(width, height, GS_BGRA, 1,
-					      (const uint8_t **)&outputBGRA.data, 0);
+	if (!outputBGRA.empty() && outputBGRA.data) {
+		gs_texture_t *tex = gs_texture_create(width, height, GS_BGRA, 1,
+						      (const uint8_t **)&outputBGRA.data, 0);
+		if (tex) {
+			gs_effect_t *effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+			gs_technique_t *tech = gs_effect_get_technique(effect, "Draw");
+			gs_eparam_t *image_param = gs_effect_get_param_by_name(effect, "image");
 
-	gs_effect_t *effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
-	gs_technique_t *tech = gs_effect_get_technique(effect, "Draw");
-	gs_eparam_t *image_param = gs_effect_get_param_by_name(effect, "image");
+			gs_effect_set_texture(image_param, tex);
 
-	gs_effect_set_texture(image_param, tex);
+			gs_technique_begin(tech);
+			gs_technique_begin_pass(tech, 0);
+			gs_draw_sprite(tex, 0, 0, 0);
+			gs_technique_end_pass(tech);
+			gs_technique_end(tech);
 
-	gs_technique_begin(tech);
-	gs_technique_begin_pass(tech, 0);
-	gs_draw_sprite(tex, 0, 0, 0);
-	gs_technique_end_pass(tech);
-	gs_technique_end(tech);
-
-	gs_texture_destroy(tex);
+			gs_texture_destroy(tex);
+		}
+	}
 }
