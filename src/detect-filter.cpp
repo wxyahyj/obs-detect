@@ -703,7 +703,7 @@ void detect_filter_video_render(void *data, gs_effect_t *_effect)
 
 			gs_draw_sprite(tex, 0, 0, 0);
 
-			gs_technique_end_pass();
+			gs_technique_end_pass(tech);
 		}
 		gs_technique_end(tech);
 

@@ -2,6 +2,7 @@
 #include "plugin-support.h"
 
 #include <obs-module.h>
+#include <mutex>
 
 /**
   * @brief Get RGBA from the stage surface

@@ -1,5 +1,8 @@
 #include "ONNXRuntimeModel.h"
 
+#include <opencv2/core.hpp>
+#include <opencv2/imgproc.hpp>
+
 #ifdef _WIN32
 #include <dml_provider_factory.h>
 #endif
@@ -8,6 +11,7 @@
 
 #include <obs.h>
 #include <stdexcept>
+#include <algorithm>
 
 ONNXRuntimeModel::ONNXRuntimeModel(file_name_t path_to_model, int intra_op_num_threads,
 				   int num_classes, int inter_op_num_threads,
@@ -141,7 +145,7 @@ cv::Mat ONNXRuntimeModel::static_resize(const cv::Mat &img, const int input_inde
 		throw std::invalid_argument("Image dimensions cannot be zero");
 	}
 
-	float r = std::fminf((float)input_w_[input_index] / (float)img.cols,
+	float r = std::min((float)input_w_[input_index] / (float)img.cols,
 			     (float)input_h_[input_index] / (float)img.rows);
 	int unpad_w = (int)(r * (float)img.cols);
 	int unpad_h = (int)(r * (float)img.rows);

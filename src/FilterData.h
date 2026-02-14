@@ -2,6 +2,9 @@
 #define FILTERDATA_H
 
 #include <obs-module.h>
+#include <opencv2/core.hpp>
+#include <mutex>
+#include <memory>
 #include "ort-model/ONNXRuntimeModel.h"
 
 /**
