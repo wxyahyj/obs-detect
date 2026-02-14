@@ -53,7 +53,7 @@ ONNXRuntimeModel::ONNXRuntimeModel(file_name_t path_to_model, int intra_op_num_t
 			Ort::ThrowOnError(api.GetExecutionProviderApi("DML", ORT_API_VERSION,
 					      (const void **)&dmlApi));
 			Ort::ThrowOnError(dmlApi->SessionOptionsAppendExecutionProvider_DML(
-				session_options.Get(), 0));
+				session_options.p_, 0));
 		}
 #endif
 
