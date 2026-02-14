@@ -888,6 +888,7 @@ void detect_filter_video_render(void *data, gs_effect_t *_effect)
 	cv::Mat frameBGR;
 	cv::cvtColor(outputBGRA, frameBGR, cv::COLOR_BGRA2BGR);
 
+	// 始终绘制十字和圆圈
 	int center_x = frameBGR.cols / 2;
 	int center_y = frameBGR.rows / 2;
 
