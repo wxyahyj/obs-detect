@@ -556,7 +556,10 @@ void detect_filter_video_tick(void *data, float seconds)
 	std::vector<Object> objects;
 
 	try {
-		std::unique_lock<std::mutex> lock(tf->modelMutex);
+		std::unique_lock<std::mutex> lock(tf->modelMutex, std::try_to_lock);
+		if (!lock.owns_lock()) {
+			return;
+		}
 		objects = tf->onnxruntimemodel->inference(inferenceFrame);
 	} catch (const Ort::Exception &e) {
 		obs_log(LOG_ERROR, "ONNXRuntime Exception: %s", e.what());
