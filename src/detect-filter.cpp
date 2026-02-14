@@ -689,7 +689,6 @@ void detect_filter_video_render(void *data, gs_effect_t *_effect)
 		{
 			std::lock_guard<std::mutex> lock(tf->outputLock);
 			if (tf->outputPreviewBGRA.empty()) {
-				obs_log(LOG_ERROR, "Preview image is empty");
 				if (tf->source) {
 					obs_source_skip_video_filter(tf->source);
 				}
