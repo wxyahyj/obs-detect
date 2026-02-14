@@ -33,6 +33,7 @@ struct filter_data {
 
 	bool isDisabled;
 	bool preview;
+	bool inferenceEnabled;
 
 	std::mutex inputBGRALock;
 	std::mutex outputLock;
@@ -42,7 +43,7 @@ struct filter_data {
 	std::vector<std::string> classNames;
 
 	std::chrono::steady_clock::time_point last_inference_time;
-	static constexpr int MIN_INFERENCE_INTERVAL_MS = 100;
+	static constexpr int MIN_INFERENCE_INTERVAL_MS = 200;
 
 #if _WIN32
 	std::wstring modelFilepath;
