@@ -34,95 +34,6 @@
 
 struct detect_filter : public filter_data {};
 
-static void inference_thread_function(struct detect_filter *tf)
-{
-	obs_log(LOG_INFO, "[obs-detect] Inference thread starting...");
-
-	try {
-		obs_log(LOG_INFO, "[obs-detect] Inference thread started successfully");
-
-		while (tf->inference_thread_running) {
-			cv::Mat frame;
-			
-			{
-				std::unique_lock<std::mutex> lock(tf->queue_mutex);
-				tf->queue_cv.wait(lock, [tf]() {
-					return !tf->inference_thread_running || !tf->frame_queue.empty();
-				});
-				
-				if (!tf->inference_thread_running) {
-					break;
-				}
-				
-				if (!tf->frame_queue.empty()) {
-					frame = tf->frame_queue.front();
-					tf->frame_queue.pop();
-					
-					while (!tf->frame_queue.empty()) {
-						tf->frame_queue.pop();
-					}
-				}
-			}
-			
-			if (frame.empty() || tf->isDisabled || !tf->onnxruntimemodel) {
-				continue;
-			}
-			
-			auto now = std::chrono::steady_clock::now();
-			auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-				now - tf->last_inference_time).count();
-			
-			if (elapsed_ms < tf->MIN_INFERENCE_INTERVAL_MS) {
-				continue;
-			}
-			
-			cv::Mat inferenceFrame;
-			cv::Rect cropRect(0, 0, frame.cols, frame.rows);
-			
-			if (tf->crop_enabled) {
-				cropRect = cv::Rect(tf->crop_left, tf->crop_top,
-						    frame.cols - tf->crop_left - tf->crop_right,
-						    frame.rows - tf->crop_top - tf->crop_bottom);
-				cv::cvtColor(frame(cropRect), inferenceFrame, cv::COLOR_BGRA2BGR);
-			} else {
-				cv::cvtColor(frame, inferenceFrame, cv::COLOR_BGRA2BGR);
-			}
-			
-			std::vector<Object> objects;
-			
-			try {
-				std::unique_lock<std::mutex> lock(tf->modelMutex, std::try_to_lock);
-				if (!lock.owns_lock()) {
-					continue;
-				}
-				objects = tf->onnxruntimemodel->inference(inferenceFrame);
-				tf->last_inference_time = now;
-				
-				if (tf->crop_enabled) {
-					for (Object &obj : objects) {
-						obj.rect.x += (float)cropRect.x;
-						obj.rect.y += (float)cropRect.y;
-					}
-				}
-				
-				{
-					std::unique_lock<std::mutex> lock(tf->detections_mutex);
-					tf->latest_detections = std::move(objects);
-				}
-				
-			} catch (const Ort::Exception &e) {
-				obs_log(LOG_ERROR, "ONNXRuntime Exception: %s", e.what());
-			} catch (const std::exception &e) {
-				obs_log(LOG_ERROR, "%s", e.what());
-			}
-		}
-	} catch (const std::exception &e) {
-		obs_log(LOG_ERROR, "[obs-detect] Inference thread exception: %s", e.what());
-	}
-	
-	obs_log(LOG_INFO, "[obs-detect] Inference thread stopped");
-}
-
 const char *detect_filter_getname(void *unused)
 {
 	UNUSED_PARAMETER(unused);
@@ -579,19 +490,8 @@ void *detect_filter_create(obs_data_t *settings, obs_source_t *source)
 	tf->texrender = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
 	tf->lastDetectedObjectId = -1;
 	tf->last_inference_time = std::chrono::steady_clock::time_point();
-	tf->inference_thread_running = true;
 
-	obs_log(LOG_INFO, "[obs-detect] Calling detect_filter_update...");
 	detect_filter_update(tf, settings);
-	obs_log(LOG_INFO, "[obs-detect] detect_filter_update done");
-
-	obs_log(LOG_INFO, "[obs-detect] Starting inference thread...");
-	try {
-		tf->inference_thread = std::thread(inference_thread_function, tf);
-		obs_log(LOG_INFO, "[obs-detect] Inference thread created");
-	} catch (const std::exception &e) {
-		obs_log(LOG_ERROR, "[obs-detect] Failed to create inference thread: %s", e.what());
-	}
 
 	return tf;
 }
@@ -604,16 +504,6 @@ void detect_filter_destroy(void *data)
 
 	if (tf) {
 		tf->isDisabled = true;
-		tf->inference_thread_running = false;
-		
-		{
-			std::unique_lock<std::mutex> lock(tf->queue_mutex);
-			tf->queue_cv.notify_all();
-		}
-		
-		if (tf->inference_thread.joinable()) {
-			tf->inference_thread.join();
-		}
 
 		obs_enter_graphics();
 		gs_texrender_destroy(tf->texrender);
@@ -633,11 +523,19 @@ void detect_filter_video_tick(void *data, float seconds)
 
 	struct detect_filter *tf = reinterpret_cast<detect_filter *>(data);
 
-	if (tf->isDisabled || !tf->inference_thread_running) {
+	if (tf->isDisabled || !tf->onnxruntimemodel) {
 		return;
 	}
 
 	if (!obs_source_enabled(tf->source)) {
+		return;
+	}
+
+	auto now = std::chrono::steady_clock::now();
+	auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+		now - tf->last_inference_time).count();
+	
+	if (elapsed_ms < tf->MIN_INFERENCE_INTERVAL_MS) {
 		return;
 	}
 
@@ -653,11 +551,116 @@ void detect_filter_video_tick(void *data, float seconds)
 		imageBGRA = tf->inputBGRA.clone();
 	}
 
-	{
-		std::unique_lock<std::mutex> lock(tf->queue_mutex);
-		tf->frame_queue.push(imageBGRA);
+	cv::Mat inferenceFrame;
+
+	cv::Rect cropRect(0, 0, imageBGRA.cols, imageBGRA.rows);
+	if (tf->crop_enabled) {
+		cropRect = cv::Rect(tf->crop_left, tf->crop_top,
+				    imageBGRA.cols - tf->crop_left - tf->crop_right,
+				    imageBGRA.rows - tf->crop_top - tf->crop_bottom);
+		cv::cvtColor(imageBGRA(cropRect), inferenceFrame, cv::COLOR_BGRA2BGR);
+	} else {
+		cv::cvtColor(imageBGRA, inferenceFrame, cv::COLOR_BGRA2BGR);
 	}
-	tf->queue_cv.notify_one();
+
+	std::vector<Object> objects;
+
+	try {
+		std::unique_lock<std::mutex> lock(tf->modelMutex, std::try_to_lock);
+		if (!lock.owns_lock()) {
+			return;
+		}
+		objects = tf->onnxruntimemodel->inference(inferenceFrame);
+		tf->last_inference_time = now;
+	} catch (const Ort::Exception &e) {
+		obs_log(LOG_ERROR, "ONNXRuntime Exception: %s", e.what());
+		return;
+	} catch (const std::exception &e) {
+		obs_log(LOG_ERROR, "%s", e.what());
+		return;
+	}
+
+	if (tf->crop_enabled) {
+		for (Object &obj : objects) {
+			obj.rect.x += (float)cropRect.x;
+			obj.rect.y += (float)cropRect.y;
+		}
+	}
+
+	if (objects.size() > 0) {
+		if (tf->lastDetectedObjectId != objects[0].label) {
+			tf->lastDetectedObjectId = objects[0].label;
+			obs_data_t *source_settings = obs_source_get_settings(tf->source);
+			obs_data_set_string(source_settings, "detected_object",
+					    tf->classNames[objects[0].label].c_str());
+			obs_data_release(source_settings);
+		}
+	} else {
+		if (tf->lastDetectedObjectId != -1) {
+			tf->lastDetectedObjectId = -1;
+			obs_data_t *source_settings = obs_source_get_settings(tf->source);
+			obs_data_set_string(source_settings, "detected_object", "");
+			obs_data_release(source_settings);
+		}
+	}
+
+	if (tf->minAreaThreshold > 0) {
+		std::vector<Object> filtered_objects;
+		for (const Object &obj : objects) {
+			if (obj.rect.area() > (float)tf->minAreaThreshold) {
+				filtered_objects.push_back(obj);
+			}
+		}
+		objects = filtered_objects;
+	}
+
+	if (tf->objectCategory != -1) {
+		std::vector<Object> filtered_objects;
+		for (const Object &obj : objects) {
+			if (obj.label == tf->objectCategory) {
+				filtered_objects.push_back(obj);
+			}
+		}
+		objects = filtered_objects;
+	}
+
+	if (!tf->saveDetectionsPath.empty()) {
+		std::ofstream detectionsFile(tf->saveDetectionsPath);
+		if (detectionsFile.is_open()) {
+			nlohmann::json j;
+			for (const Object &obj : objects) {
+				nlohmann::json obj_json;
+				obj_json["label"] = obj.label;
+				obj_json["confidence"] = obj.prob;
+				obj_json["rect"] = {{"x", obj.rect.x},
+						    {"y", obj.rect.y},
+						    {"width", obj.rect.width},
+						    {"height", obj.rect.height}};
+				obj_json["id"] = obj.id;
+				j.push_back(obj_json);
+			}
+			detectionsFile << j.dump(4);
+			detectionsFile.close();
+		} else {
+			obs_log(LOG_ERROR, "Failed to open file for writing detections: %s",
+				tf->saveDetectionsPath.c_str());
+		}
+	}
+
+	if (tf->preview) {
+		cv::Mat frame;
+		cv::cvtColor(imageBGRA, frame, cv::COLOR_BGRA2BGR);
+
+		if (tf->preview && tf->crop_enabled) {
+			drawDashedRectangle(frame, cropRect, cv::Scalar(0, 255, 0), 5, 8, 15);
+		}
+		if (tf->preview && objects.size() > 0) {
+			draw_objects(frame, objects, tf->classNames);
+		}
+
+		std::lock_guard<std::mutex> lock(tf->outputLock);
+		cv::cvtColor(frame, tf->outputPreviewBGRA, cv::COLOR_BGR2BGRA);
+	}
 }
 
 void detect_filter_video_render(void *data, gs_effect_t *_effect)
@@ -666,7 +669,7 @@ void detect_filter_video_render(void *data, gs_effect_t *_effect)
 
 	struct detect_filter *tf = reinterpret_cast<detect_filter *>(data);
 
-	if (tf->isDisabled) {
+	if (tf->isDisabled || !tf->onnxruntimemodel) {
 		if (tf->source) {
 			obs_source_skip_video_filter(tf->source);
 		}
@@ -681,56 +684,12 @@ void detect_filter_video_render(void *data, gs_effect_t *_effect)
 		return;
 	}
 
-	std::vector<Object> objects;
-	{
-		std::unique_lock<std::mutex> lock(tf->detections_mutex, std::try_to_lock);
-		if (lock.owns_lock()) {
-			objects = tf->latest_detections;
-		}
-	}
-
 	if (tf->preview) {
-		cv::Mat previewImage;
-		{
-			std::unique_lock<std::mutex> lock(tf->inputBGRALock, std::try_to_lock);
-			if (lock.owns_lock() && !tf->inputBGRA.empty()) {
-				previewImage = tf->inputBGRA.clone();
-			}
-		}
-
-		if (!previewImage.empty()) {
-			std::vector<Object> filtered_objects;
-			for (auto &obj : objects) {
-				if (obj.label == -1) {
-					continue;
-				}
-				if (obj.prob < tf->conf_threshold) {
-					continue;
-				}
-				if (tf->objectCategory != -1 && obj.label != tf->objectCategory) {
-					continue;
-				}
-				int area = (int)(obj.rect.width * obj.rect.height);
-				if (area < tf->minAreaThreshold) {
-					continue;
-				}
-				filtered_objects.push_back(obj);
-			}
-
-			cv::Mat frameBGR;
-			cv::cvtColor(previewImage, frameBGR, cv::COLOR_BGRA2BGR);
-			draw_objects(frameBGR, filtered_objects, tf->classNames);
-			
-			{
-				std::unique_lock<std::mutex> lock(tf->outputLock);
-				cv::cvtColor(frameBGR, tf->outputPreviewBGRA, cv::COLOR_BGR2BGRA);
-			}
-		}
-
 		cv::Mat outputBGRA;
 		{
-			std::unique_lock<std::mutex> lock(tf->outputLock);
+			std::lock_guard<std::mutex> lock(tf->outputLock);
 			if (tf->outputPreviewBGRA.empty()) {
+				obs_log(LOG_ERROR, "Preview image is empty");
 				if (tf->source) {
 					obs_source_skip_video_filter(tf->source);
 				}
@@ -757,7 +716,9 @@ void detect_filter_video_render(void *data, gs_effect_t *_effect)
 
 		while (gs_technique_begin(tech)) {
 			gs_technique_begin_pass(tech, 0);
+
 			gs_draw_sprite(tex, 0, 0, 0);
+
 			gs_technique_end_pass(tech);
 		}
 		gs_technique_end(tech);
