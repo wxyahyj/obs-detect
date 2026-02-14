@@ -446,6 +446,8 @@ void detect_filter_update(void *data, obs_data_t *settings)
 			tf->onnxruntimemodel.reset();
 			return;
 		}
+	} else {
+		obs_log(LOG_INFO, "Model already loaded, skipping reinitialization");
 	}
 
 	if (tf->onnxruntimemodel) {
@@ -539,7 +541,8 @@ void detect_filter_video_tick(void *data, float seconds)
 		obs_log(LOG_INFO, "Inference state changed to: %s", tf->inferenceEnabled ? "ENABLED" : "DISABLED");
 	}
 
-	if (tf->isDisabled || !tf->onnxruntimemodel) {
+	if (tf->isDisabled) {
+		obs_log(LOG_WARNING, "Filter is disabled, skipping tick");
 		return;
 	}
 
@@ -559,6 +562,15 @@ void detect_filter_video_tick(void *data, float seconds)
 			return;
 		}
 		imageBGRA = tf->inputBGRA.clone();
+	}
+
+	if (!tf->onnxruntimemodel) {
+		obs_log(LOG_WARNING, "Model not loaded, showing original image");
+		if (tf->preview) {
+			std::lock_guard<std::mutex> lock(tf->outputLock);
+			tf->outputPreviewBGRA = imageBGRA.clone();
+		}
+		return;
 	}
 
 	bool inference_ran = false;
