@@ -69,24 +69,23 @@ if(APPLE)
       "@loader_path/../Frameworks/libonnxruntime.${Onnxruntime_VERSION}.dylib" $<TARGET_FILE:${CMAKE_PROJECT_NAME}>)
 elseif(MSVC)
   add_library(Ort INTERFACE)
-  set(Onnxruntime_LIB_NAMES
-      session;providers_shared;providers_dml;optimizer;providers;framework;graph;util;mlas;common;flatbuffers)
-  foreach(lib_name IN LISTS Onnxruntime_LIB_NAMES)
-    add_library(Ort::${lib_name} STATIC IMPORTED)
-    set_target_properties(Ort::${lib_name} PROPERTIES IMPORTED_LOCATION
-                                                      ${onnxruntime_SOURCE_DIR}/lib/onnxruntime_${lib_name}.lib)
-    set_target_properties(Ort::${lib_name} PROPERTIES INTERFACE_INCLUDE_DIRECTORIES ${onnxruntime_SOURCE_DIR}/include)
-    target_link_libraries(Ort INTERFACE Ort::${lib_name})
-  endforeach()
-
-  set(Onnxruntime_EXTERNAL_LIB_NAMES
-      onnx;onnx_proto;libprotobuf-lite;re2;absl_throw_delegate;absl_hash;absl_city;absl_low_level_hash;absl_raw_hash_set
+  
+  # For ONNX Runtime 1.22.1, we only need the main onnxruntime.lib and providers
+  target_link_libraries(Ort INTERFACE
+      ${onnxruntime_SOURCE_DIR}/lib/onnxruntime.lib
+      ${onnxruntime_SOURCE_DIR}/lib/onnxruntime_providers_shared.lib
   )
-  foreach(lib_name IN LISTS Onnxruntime_EXTERNAL_LIB_NAMES)
-    add_library(Ort::${lib_name} STATIC IMPORTED)
-    set_target_properties(Ort::${lib_name} PROPERTIES IMPORTED_LOCATION ${onnxruntime_SOURCE_DIR}/lib/${lib_name}.lib)
-    target_link_libraries(Ort INTERFACE Ort::${lib_name})
-  endforeach()
+  
+  # For GPU support
+  if(EXISTS "${onnxruntime_SOURCE_DIR}/lib/onnxruntime_providers_cuda.lib")
+      target_link_libraries(Ort INTERFACE ${onnxruntime_SOURCE_DIR}/lib/onnxruntime_providers_cuda.lib)
+  endif()
+  
+  if(EXISTS "${onnxruntime_SOURCE_DIR}/lib/onnxruntime_providers_tensorrt.lib")
+      target_link_libraries(Ort INTERFACE ${onnxruntime_SOURCE_DIR}/lib/onnxruntime_providers_tensorrt.lib)
+  endif()
+  
+  set_target_properties(Ort PROPERTIES INTERFACE_INCLUDE_DIRECTORIES ${onnxruntime_SOURCE_DIR}/include)
 
   add_library(Ort::DirectML SHARED IMPORTED)
   set_target_properties(Ort::DirectML PROPERTIES IMPORTED_LOCATION ${onnxruntime_SOURCE_DIR}/bin/DirectML.dll)
