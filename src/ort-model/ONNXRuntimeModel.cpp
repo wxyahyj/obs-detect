@@ -4,6 +4,9 @@
 #include <opencv2/imgproc.hpp>
 
 #ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <dml_provider_factory.h>
 #endif
 
