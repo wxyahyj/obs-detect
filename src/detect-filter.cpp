@@ -448,6 +448,7 @@ void detect_filter_update(void *data, obs_data_t *settings)
 		}
 	} else {
 		obs_log(LOG_INFO, "Model already loaded, skipping reinitialization");
+		tf->isDisabled = false;
 	}
 
 	if (tf->onnxruntimemodel) {
@@ -472,7 +473,9 @@ void detect_filter_update(void *data, obs_data_t *settings)
 #endif
 	}
 
-	tf->isDisabled = false;
+	if (!reinitialize) {
+		tf->isDisabled = false;
+	}
 }
 
 void detect_filter_activate(void *data)
