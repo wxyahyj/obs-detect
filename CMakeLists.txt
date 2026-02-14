@@ -80,6 +80,12 @@ endif()
 # add the vendor folder to the include path
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE vendor include)
 
+# DirectML library
+target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include/directml/bin/DirectML.lib)
+
+# Add DirectML bin directory to path for runtime
+target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include/directml/bin)
+
 target_sources(
   ${CMAKE_PROJECT_NAME}
   PRIVATE src/plugin-main.c

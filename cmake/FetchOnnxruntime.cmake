@@ -87,14 +87,15 @@ elseif(MSVC)
   
   set_target_properties(Ort PROPERTIES INTERFACE_INCLUDE_DIRECTORIES ${onnxruntime_SOURCE_DIR}/include)
 
+  # DirectML support using local DirectML library
   add_library(Ort::DirectML SHARED IMPORTED)
-  set_target_properties(Ort::DirectML PROPERTIES IMPORTED_LOCATION ${onnxruntime_SOURCE_DIR}/bin/DirectML.dll)
-  set_target_properties(Ort::DirectML PROPERTIES IMPORTED_IMPLIB ${onnxruntime_SOURCE_DIR}/bin/DirectML.lib)
-
+  set_target_properties(Ort::DirectML PROPERTIES IMPORTED_LOCATION ${CMAKE_CURRENT_SOURCE_DIR}/include/directml/bin/DirectML.dll)
+  set_target_properties(Ort::DirectML PROPERTIES IMPORTED_IMPLIB ${CMAKE_CURRENT_SOURCE_DIR}/include/directml/bin/DirectML.lib)
   target_link_libraries(Ort INTERFACE Ort::DirectML d3d12.lib dxgi.lib dxguid.lib Dxcore.lib)
 
   target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE Ort)
 
+  # Install DirectML
   install(IMPORTED_RUNTIME_ARTIFACTS Ort::DirectML DESTINATION "obs-plugins/64bit")
 else()
   if(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
