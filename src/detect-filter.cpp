@@ -790,11 +790,10 @@ void detect_filter_video_render(void *data, gs_effect_t *_effect)
 
 	gs_effect_set_texture(image_param, tex);
 
-	while (gs_technique_begin(tech)) {
-		gs_technique_begin_pass(tech, 0);
-		gs_draw_sprite(tex, 0, 0, 0);
-		gs_technique_end_pass(tech);
-	}
+	gs_technique_begin(tech);
+	gs_technique_begin_pass(tech, 0);
+	gs_draw_sprite(tex, 0, 0, 0);
+	gs_technique_end_pass(tech);
 	gs_technique_end(tech);
 
 	gs_texture_destroy(tex);
