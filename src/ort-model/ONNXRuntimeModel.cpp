@@ -61,13 +61,20 @@ ONNXRuntimeModel::ONNXRuntimeModel(file_name_t path_to_model, int intra_op_num_t
 					obs_log(LOG_INFO, "Successfully got DML API");
 					if (dmlApi != nullptr) {
 						obs_log(LOG_INFO, "Attempting to append DML execution provider");
-						status = dmlApi->SessionOptionsAppendExecutionProvider_DML(
-							session_options, 0);
-						if (status != nullptr) {
-							obs_log(LOG_ERROR, "Failed to append DML execution provider: %s", Ort::GetApi().GetErrorMessage(status));
-							Ort::GetApi().ReleaseStatus(status);
-						} else {
-							obs_log(LOG_INFO, "Successfully appended DML execution provider");
+						try {
+							// 使用 ONNX Runtime C++ API 推荐的方式获取底层指针
+							OrtSessionOptions* session_options_ptr = 
+								session_options.GetUnowned().p_;
+							status = dmlApi->SessionOptionsAppendExecutionProvider_DML(
+								session_options_ptr, 0);
+							if (status != nullptr) {
+								obs_log(LOG_ERROR, "Failed to append DML execution provider: %s", Ort::GetApi().GetErrorMessage(status));
+								Ort::GetApi().ReleaseStatus(status);
+							} else {
+								obs_log(LOG_INFO, "Successfully appended DML execution provider");
+							}
+						} catch (std::exception &e) {
+							obs_log(LOG_ERROR, "Exception when appending DML execution provider: %s", e.what());
 						}
 					} else {
 						obs_log(LOG_ERROR, "DML API pointer is null");
