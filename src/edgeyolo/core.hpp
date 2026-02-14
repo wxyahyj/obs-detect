@@ -30,21 +30,14 @@ public:
 				   conf_th)
 	{
 		if (this->output_shapes_.empty()) {
-			obs_log(LOG_ERROR, "No output shapes available");
 			throw std::runtime_error("No output shapes available");
 		}
 		
 		const auto &output_shape = this->output_shapes_[0];
 		
-		obs_log(LOG_INFO, "Output shape dimensions: %zu", output_shape.size());
-		for (size_t i = 0; i < output_shape.size(); i++) {
-			obs_log(LOG_INFO, "  Dim %zu: %lld", i, output_shape[i]);
-		}
-		
 		this->num_array_ = 1;
 		for (size_t i = 0; i < output_shape.size(); i++) {
 			if (output_shape[i] <= 0) {
-				obs_log(LOG_WARNING, "Output dimension %zu is %lld, skipping", i, output_shape[i]);
 				continue;
 			}
 			this->num_array_ *= (int)(output_shape[i]);
@@ -52,13 +45,9 @@ public:
 		
 		const int elements_per_box = 5 + this->num_classes_;
 		if (this->num_array_ % elements_per_box != 0) {
-			obs_log(LOG_WARNING, "Total elements %d not divisible by %d, using raw count", 
-				this->num_array_, elements_per_box);
 		} else {
 			this->num_array_ /= elements_per_box;
 		}
-		
-		obs_log(LOG_INFO, "Calculated num_array: %d", this->num_array_);
 	}
 
 protected:
@@ -68,11 +57,9 @@ protected:
 					 const float prob_threshold, std::vector<Object> &objects)
 	{
 		if (num_array <= 0) {
-			obs_log(LOG_ERROR, "Invalid num_array: %d", num_array);
 			return;
 		}
 		if (feat_ptr == nullptr) {
-			obs_log(LOG_ERROR, "feat_ptr is null");
 			return;
 		}
 
@@ -115,15 +102,12 @@ protected:
 			    const int img_h)
 	{
 		if (prob == nullptr) {
-			obs_log(LOG_ERROR, "prob is null");
 			return;
 		}
 		if (num_array <= 0) {
-			obs_log(LOG_ERROR, "Invalid num_array: %d", num_array);
 			return;
 		}
 		if (img_w <= 0 || img_h <= 0) {
-			obs_log(LOG_ERROR, "Invalid image dimensions: %dx%d", img_w, img_h);
 			return;
 		}
 

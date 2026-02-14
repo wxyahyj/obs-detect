@@ -23,18 +23,15 @@ std::vector<Object> EdgeYOLOONNXRuntime::inference(const cv::Mat &frame)
 	ONNXRuntimeModel::inference(frame, 0);
 
 	if (this->output_buffer_.empty()) {
-		obs_log(LOG_ERROR, "Output buffer is empty");
 		return {};
 	}
 
 	float *net_pred = (float *)this->output_buffer_[0].get();
 	if (net_pred == nullptr) {
-		obs_log(LOG_ERROR, "Net prediction is null");
 		return {};
 	}
 
 	if (this->num_array_ <= 0) {
-		obs_log(LOG_ERROR, "Invalid num_array: %d", this->num_array_);
 		return {};
 	}
 
