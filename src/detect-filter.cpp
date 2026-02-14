@@ -674,20 +674,6 @@ void detect_filter_video_tick(void *data, float seconds)
 							drawDashedRectangle(frame, cropRect, cv::Scalar(0, 255, 0), 5, 8, 15);
 						}
 						
-						int center_x = frame.cols / 2;
-						int center_y = frame.rows / 2;
-						
-						cv::Scalar cross_color = cv::Scalar(0, 255, 0);
-						cv::Scalar circle_color = cv::Scalar(0, 0, 255);
-						
-						cv::line(frame, cv::Point(center_x - 30, center_y), 
-							 cv::Point(center_x + 30, center_y), cross_color, 2);
-						cv::line(frame, cv::Point(center_x, center_y - 30), 
-							 cv::Point(center_x, center_y + 30), cross_color, 2);
-						
-						int circle_radius = 50;
-						cv::circle(frame, cv::Point(center_x, center_y), circle_radius, circle_color, 2);
-						
 						if (objects.size() > 0) {
 							draw_objects(frame, objects, tf->classNames);
 							drew_boxes = true;
@@ -721,25 +707,7 @@ void detect_filter_video_tick(void *data, float seconds)
 
 	if ((!inference_ran || !drew_boxes) && tf->preview) {
 		std::lock_guard<std::mutex> lock(tf->outputLock);
-		
-		cv::Mat frame;
-		cv::cvtColor(imageBGRA, frame, cv::COLOR_BGRA2BGR);
-		
-		int center_x = frame.cols / 2;
-		int center_y = frame.rows / 2;
-		
-		cv::Scalar cross_color = cv::Scalar(0, 255, 0);
-		cv::Scalar circle_color = cv::Scalar(0, 0, 255);
-		
-		cv::line(frame, cv::Point(center_x - 30, center_y), 
-			 cv::Point(center_x + 30, center_y), cross_color, 2);
-		cv::line(frame, cv::Point(center_x, center_y - 30), 
-			 cv::Point(center_x, center_y + 30), cross_color, 2);
-		
-		int circle_radius = 50;
-		cv::circle(frame, cv::Point(center_x, center_y), circle_radius, circle_color, 2);
-		
-		cv::cvtColor(frame, tf->outputPreviewBGRA, cv::COLOR_BGR2BGRA);
+		tf->outputPreviewBGRA = imageBGRA.clone();
 	}
 }
 
@@ -748,11 +716,6 @@ void detect_filter_video_render(void *data, gs_effect_t *_effect)
 	UNUSED_PARAMETER(_effect);
 
 	struct detect_filter *tf = reinterpret_cast<detect_filter *>(data);
-
-	if (tf->isDisabled || !tf->onnxruntimemodel) {
-		obs_source_skip_video_filter(tf->source);
-		return;
-	}
 
 	if (!tf->preview) {
 		obs_source_skip_video_filter(tf->source);
@@ -784,9 +747,39 @@ void detect_filter_video_render(void *data, gs_effect_t *_effect)
 	}
 
 	if (!use_output) {
-		obs_source_skip_video_filter(tf->source);
-		return;
+		if (!getRGBAFromStageSurface(tf, width, height)) {
+			obs_source_skip_video_filter(tf->source);
+			return;
+		}
+		
+		{
+			std::lock_guard<std::mutex> lock(tf->inputBGRALock);
+			if (tf->inputBGRA.empty()) {
+				obs_source_skip_video_filter(tf->source);
+				return;
+			}
+			outputBGRA = tf->inputBGRA.clone();
+		}
 	}
+
+	cv::Mat frameBGR;
+	cv::cvtColor(outputBGRA, frameBGR, cv::COLOR_BGRA2BGR);
+
+	int center_x = frameBGR.cols / 2;
+	int center_y = frameBGR.rows / 2;
+
+	cv::Scalar cross_color = cv::Scalar(0, 255, 0);
+	cv::Scalar circle_color = cv::Scalar(0, 0, 255);
+
+	cv::line(frameBGR, cv::Point(center_x - 30, center_y), 
+		 cv::Point(center_x + 30, center_y), cross_color, 2);
+	cv::line(frameBGR, cv::Point(center_x, center_y - 30), 
+		 cv::Point(center_x, center_y + 30), cross_color, 2);
+
+	int circle_radius = 50;
+	cv::circle(frameBGR, cv::Point(center_x, center_y), circle_radius, circle_color, 2);
+
+	cv::cvtColor(frameBGR, outputBGRA, cv::COLOR_BGR2BGRA);
 
 	gs_texture_t *tex = gs_texture_create(width, height, GS_BGRA, 1,
 					      (const uint8_t **)&outputBGRA.data, 0);
