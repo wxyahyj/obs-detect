@@ -36,82 +36,88 @@ struct detect_filter : public filter_data {};
 
 static void inference_thread_function(struct detect_filter *tf)
 {
-	obs_log(LOG_INFO, "[obs-detect] Inference thread started");
+	obs_log(LOG_INFO, "[obs-detect] Inference thread starting...");
 
-	while (tf->inference_thread_running) {
-		cv::Mat frame;
-		
-		{
-			std::unique_lock<std::mutex> lock(tf->queue_mutex);
-			tf->queue_cv.wait(lock, [tf]() {
-				return !tf->inference_thread_running || !tf->frame_queue.empty();
-			});
-			
-			if (!tf->inference_thread_running) {
-				break;
-			}
-			
-			if (!tf->frame_queue.empty()) {
-				frame = tf->frame_queue.front();
-				tf->frame_queue.pop();
-				
-				while (!tf->frame_queue.empty()) {
-					tf->frame_queue.pop();
-				}
-			}
-		}
-		
-		if (frame.empty() || tf->isDisabled || !tf->onnxruntimemodel) {
-			continue;
-		}
-		
-		auto now = std::chrono::steady_clock::now();
-		auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-			now - tf->last_inference_time).count();
-		
-		if (elapsed_ms < tf->MIN_INFERENCE_INTERVAL_MS) {
-			continue;
-		}
-		
-		cv::Mat inferenceFrame;
-		cv::Rect cropRect(0, 0, frame.cols, frame.rows);
-		
-		if (tf->crop_enabled) {
-			cropRect = cv::Rect(tf->crop_left, tf->crop_top,
-					    frame.cols - tf->crop_left - tf->crop_right,
-					    frame.rows - tf->crop_top - tf->crop_bottom);
-			cv::cvtColor(frame(cropRect), inferenceFrame, cv::COLOR_BGRA2BGR);
-		} else {
-			cv::cvtColor(frame, inferenceFrame, cv::COLOR_BGRA2BGR);
-		}
-		
-		std::vector<Object> objects;
-		
-		try {
-			std::unique_lock<std::mutex> lock(tf->modelMutex, std::try_to_lock);
-			if (!lock.owns_lock()) {
-				continue;
-			}
-			objects = tf->onnxruntimemodel->inference(inferenceFrame);
-			tf->last_inference_time = now;
-			
-			if (tf->crop_enabled) {
-				for (Object &obj : objects) {
-					obj.rect.x += (float)cropRect.x;
-					obj.rect.y += (float)cropRect.y;
-				}
-			}
+	try {
+		obs_log(LOG_INFO, "[obs-detect] Inference thread started successfully");
+
+		while (tf->inference_thread_running) {
+			cv::Mat frame;
 			
 			{
-				std::unique_lock<std::mutex> lock(tf->detections_mutex);
-				tf->latest_detections = std::move(objects);
+				std::unique_lock<std::mutex> lock(tf->queue_mutex);
+				tf->queue_cv.wait(lock, [tf]() {
+					return !tf->inference_thread_running || !tf->frame_queue.empty();
+				});
+				
+				if (!tf->inference_thread_running) {
+					break;
+				}
+				
+				if (!tf->frame_queue.empty()) {
+					frame = tf->frame_queue.front();
+					tf->frame_queue.pop();
+					
+					while (!tf->frame_queue.empty()) {
+						tf->frame_queue.pop();
+					}
+				}
 			}
 			
-		} catch (const Ort::Exception &e) {
-			obs_log(LOG_ERROR, "ONNXRuntime Exception: %s", e.what());
-		} catch (const std::exception &e) {
-			obs_log(LOG_ERROR, "%s", e.what());
+			if (frame.empty() || tf->isDisabled || !tf->onnxruntimemodel) {
+				continue;
+			}
+			
+			auto now = std::chrono::steady_clock::now();
+			auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+				now - tf->last_inference_time).count();
+			
+			if (elapsed_ms < tf->MIN_INFERENCE_INTERVAL_MS) {
+				continue;
+			}
+			
+			cv::Mat inferenceFrame;
+			cv::Rect cropRect(0, 0, frame.cols, frame.rows);
+			
+			if (tf->crop_enabled) {
+				cropRect = cv::Rect(tf->crop_left, tf->crop_top,
+						    frame.cols - tf->crop_left - tf->crop_right,
+						    frame.rows - tf->crop_top - tf->crop_bottom);
+				cv::cvtColor(frame(cropRect), inferenceFrame, cv::COLOR_BGRA2BGR);
+			} else {
+				cv::cvtColor(frame, inferenceFrame, cv::COLOR_BGRA2BGR);
+			}
+			
+			std::vector<Object> objects;
+			
+			try {
+				std::unique_lock<std::mutex> lock(tf->modelMutex, std::try_to_lock);
+				if (!lock.owns_lock()) {
+					continue;
+				}
+				objects = tf->onnxruntimemodel->inference(inferenceFrame);
+				tf->last_inference_time = now;
+				
+				if (tf->crop_enabled) {
+					for (Object &obj : objects) {
+						obj.rect.x += (float)cropRect.x;
+						obj.rect.y += (float)cropRect.y;
+					}
+				}
+				
+				{
+					std::unique_lock<std::mutex> lock(tf->detections_mutex);
+					tf->latest_detections = std::move(objects);
+				}
+				
+			} catch (const Ort::Exception &e) {
+				obs_log(LOG_ERROR, "ONNXRuntime Exception: %s", e.what());
+			} catch (const std::exception &e) {
+				obs_log(LOG_ERROR, "%s", e.what());
+			}
 		}
+	} catch (const std::exception &e) {
+		obs_log(LOG_ERROR, "[obs-detect] Inference thread exception: %s", e.what());
 	}
 	
 	obs_log(LOG_INFO, "[obs-detect] Inference thread stopped");
@@ -575,9 +581,17 @@ void *detect_filter_create(obs_data_t *settings, obs_source_t *source)
 	tf->last_inference_time = std::chrono::steady_clock::time_point();
 	tf->inference_thread_running = true;
 
+	obs_log(LOG_INFO, "[obs-detect] Calling detect_filter_update...");
 	detect_filter_update(tf, settings);
+	obs_log(LOG_INFO, "[obs-detect] detect_filter_update done");
 
-	tf->inference_thread = std::thread(inference_thread_function, tf);
+	obs_log(LOG_INFO, "[obs-detect] Starting inference thread...");
+	try {
+		tf->inference_thread = std::thread(inference_thread_function, tf);
+		obs_log(LOG_INFO, "[obs-detect] Inference thread created");
+	} catch (const std::exception &e) {
+		obs_log(LOG_ERROR, "[obs-detect] Failed to create inference thread: %s", e.what());
+	}
 
 	return tf;
 }
