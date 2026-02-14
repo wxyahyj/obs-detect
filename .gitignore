@@ -6,6 +6,7 @@
 !/build-aux
 !/cmake
 !/data
+!/include
 !/src
 !.clang-format
 !.cmake-format.json
