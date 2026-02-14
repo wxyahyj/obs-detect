@@ -3,6 +3,13 @@
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <dml_provider_factory.h>
+#endif
+
 #include "plugin-support.h"
 
 #include <obs.h>
@@ -44,7 +51,7 @@ ONNXRuntimeModel::ONNXRuntimeModel(file_name_t path_to_model, int intra_op_num_t
 			auto &api = Ort::GetApi();
 			OrtDmlApi *dmlApi = nullptr;
 			Ort::ThrowOnError(api.GetExecutionProviderApi("DML", ORT_API_VERSION,
-								      (const void **)&dmlApi));
+							      (const void **)&dmlApi));
 			Ort::ThrowOnError(dmlApi->SessionOptionsAppendExecutionProvider_DML(
 				session_options, 0));
 		}

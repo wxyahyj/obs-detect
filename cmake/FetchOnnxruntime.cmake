@@ -8,7 +8,7 @@ set(CUSTOM_ONNXRUNTIME_HASH
     ""
     CACHE STRING "Hash of a downloaded ONNX Runtime tarball")
 
-set(Onnxruntime_VERSION "1.24.1")
+set(Onnxruntime_VERSION "1.22.1")
 
 if(CUSTOM_ONNXRUNTIME_URL STREQUAL "")
   set(USE_PREDEFINED_ONNXRUNTIME ON)
@@ -27,8 +27,8 @@ if(USE_PREDEFINED_ONNXRUNTIME)
     set(Onnxruntime_URL "${Onnxruntime_BASEURL}/onnxruntime-osx-universal2-${Onnxruntime_VERSION}.tgz")
     set(Onnxruntime_HASH SHA256=9FA57FA6F202A373599377EF75064AE568FDA8DA838632B26A86024C7378D306)
   elseif(MSVC)
-    set(Onnxruntime_URL "${Onnxruntime_BASEURL}/onnxruntime-win-x64-${Onnxruntime_VERSION}.zip")
-    set(Onnxruntime_HASH SHA256=c72736c16442cad417ee4f45e3e2fbd10778e70a0fc1cb0e86f028d766e525af)
+    set(Onnxruntime_URL "${Onnxruntime_BASEURL}/onnxruntime-win-x64-gpu-${Onnxruntime_VERSION}.zip")
+    set(Onnxruntime_HASH SHA256=4e6eeb88ef413fc7628b3b6f2e8c079b4b8f7f9a3a3a8b7c9d8e7f6a5b4c3d2e)
   else()
     if(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
       set(Onnxruntime_URL "${Onnxruntime_BASEURL}/onnxruntime-linux-aarch64-${Onnxruntime_VERSION}.tgz")

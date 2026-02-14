@@ -78,7 +78,7 @@ else()
 endif()
 
 # add the vendor folder to the include path
-target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE vendor)
+target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE vendor include)
 
 target_sources(
   ${CMAKE_PROJECT_NAME}
