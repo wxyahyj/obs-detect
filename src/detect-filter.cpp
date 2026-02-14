@@ -673,6 +673,21 @@ void detect_filter_video_tick(void *data, float seconds)
 						if (tf->crop_enabled) {
 							drawDashedRectangle(frame, cropRect, cv::Scalar(0, 255, 0), 5, 8, 15);
 						}
+						
+						int center_x = frame.cols / 2;
+						int center_y = frame.rows / 2;
+						
+						cv::Scalar cross_color = cv::Scalar(0, 255, 0);
+						cv::Scalar circle_color = cv::Scalar(0, 0, 255);
+						
+						cv::line(frame, cv::Point(center_x - 30, center_y), 
+							 cv::Point(center_x + 30, center_y), cross_color, 2);
+						cv::line(frame, cv::Point(center_x, center_y - 30), 
+							 cv::Point(center_x, center_y + 30), cross_color, 2);
+						
+						int circle_radius = 50;
+						cv::circle(frame, cv::Point(center_x, center_y), circle_radius, circle_color, 2);
+						
 						if (objects.size() > 0) {
 							draw_objects(frame, objects, tf->classNames);
 							drew_boxes = true;
@@ -706,7 +721,25 @@ void detect_filter_video_tick(void *data, float seconds)
 
 	if ((!inference_ran || !drew_boxes) && tf->preview) {
 		std::lock_guard<std::mutex> lock(tf->outputLock);
-		tf->outputPreviewBGRA = imageBGRA.clone();
+		
+		cv::Mat frame;
+		cv::cvtColor(imageBGRA, frame, cv::COLOR_BGRA2BGR);
+		
+		int center_x = frame.cols / 2;
+		int center_y = frame.rows / 2;
+		
+		cv::Scalar cross_color = cv::Scalar(0, 255, 0);
+		cv::Scalar circle_color = cv::Scalar(0, 0, 255);
+		
+		cv::line(frame, cv::Point(center_x - 30, center_y), 
+			 cv::Point(center_x + 30, center_y), cross_color, 2);
+		cv::line(frame, cv::Point(center_x, center_y - 30), 
+			 cv::Point(center_x, center_y + 30), cross_color, 2);
+		
+		int circle_radius = 50;
+		cv::circle(frame, cv::Point(center_x, center_y), circle_radius, circle_color, 2);
+		
+		cv::cvtColor(frame, tf->outputPreviewBGRA, cv::COLOR_BGR2BGRA);
 	}
 }
 

@@ -55,7 +55,6 @@ const float color_list[80][3] = {
 static void draw_objects(cv::Mat bgr, const std::vector<Object> &objects,
 			 const std::vector<std::string> &class_names)
 {
-
 	for (size_t i = 0; i < objects.size(); i++) {
 		const Object &obj = objects[i];
 
@@ -96,7 +95,6 @@ static void draw_objects(cv::Mat bgr, const std::vector<Object> &objects,
 		cv::putText(bgr, text, cv::Point(x, y + label_size.height),
 			    cv::FONT_HERSHEY_SIMPLEX, 0.4, txt_color, 1);
 
-		// write the id of the object
 		snprintf(text, sizeof(text), "ID: %d", (int)obj.id);
 		cv::putText(bgr, text, cv::Point(x, y + label_size.height + 15),
 			    cv::FONT_HERSHEY_SIMPLEX, 0.4, txt_color, 1);
