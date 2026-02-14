@@ -555,6 +555,7 @@ void detect_filter_video_tick(void *data, float seconds)
 		imageBGRA = tf->inputBGRA.clone();
 	}
 
+	bool inference_ran = false;
 	if (tf->inferenceEnabled) {
 		auto now = std::chrono::steady_clock::now();
 		auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -580,6 +581,7 @@ void detect_filter_video_tick(void *data, float seconds)
 				if (lock.owns_lock()) {
 					objects = tf->onnxruntimemodel->inference(inferenceFrame);
 					tf->last_inference_time = now;
+					inference_ran = true;
 
 					if (tf->crop_enabled) {
 						for (Object &obj : objects) {
@@ -659,6 +661,15 @@ void detect_filter_video_tick(void *data, float seconds)
 						std::lock_guard<std::mutex> lock_output(tf->outputLock);
 						cv::cvtColor(frame, tf->outputPreviewBGRA, cv::COLOR_BGR2BGRA);
 					}
+
+					if (objects.size() > 0) {
+						obs_log(LOG_DEBUG, "Detected %d objects", objects.size());
+						for (const auto &obj : objects) {
+							obs_log(LOG_DEBUG, "  - %s (%.2f) at [%.0f, %.0f, %.0f, %.0f]",
+								tf->classNames[obj.label].c_str(), obj.prob,
+								obj.rect.x, obj.rect.y, obj.rect.width, obj.rect.height);
+						}
+					}
 				}
 			} catch (const Ort::Exception &e) {
 				obs_log(LOG_ERROR, "ONNXRuntime Exception: %s", e.what());
@@ -666,11 +677,11 @@ void detect_filter_video_tick(void *data, float seconds)
 				obs_log(LOG_ERROR, "%s", e.what());
 			}
 		}
-	} else {
-		if (tf->preview) {
-			std::lock_guard<std::mutex> lock(tf->outputLock);
-			tf->outputPreviewBGRA = imageBGRA.clone();
-		}
+	}
+
+	if (!inference_ran && tf->preview) {
+		std::lock_guard<std::mutex> lock(tf->outputLock);
+		tf->outputPreviewBGRA = imageBGRA.clone();
 	}
 }
 
@@ -681,52 +692,42 @@ void detect_filter_video_render(void *data, gs_effect_t *_effect)
 	struct detect_filter *tf = reinterpret_cast<detect_filter *>(data);
 
 	if (tf->isDisabled || !tf->onnxruntimemodel) {
-		if (tf->source) {
-			obs_source_skip_video_filter(tf->source);
-		}
+		obs_source_skip_video_filter(tf->source);
 		return;
 	}
 
 	if (!tf->preview) {
-		if (tf->source) {
-			obs_source_skip_video_filter(tf->source);
-		}
+		obs_source_skip_video_filter(tf->source);
 		return;
 	}
 
 	obs_source_t *target = obs_filter_get_target(tf->source);
 	if (!target) {
-		if (tf->source) {
-			obs_source_skip_video_filter(tf->source);
-		}
+		obs_source_skip_video_filter(tf->source);
 		return;
 	}
 	uint32_t width = obs_source_get_base_width(target);
 	uint32_t height = obs_source_get_base_height(target);
 	if (width == 0 || height == 0) {
-		if (tf->source) {
-			obs_source_skip_video_filter(tf->source);
-		}
+		obs_source_skip_video_filter(tf->source);
 		return;
 	}
 
 	cv::Mat outputBGRA;
+	bool use_output = false;
 	{
 		std::lock_guard<std::mutex> lock(tf->outputLock);
-		if (tf->outputPreviewBGRA.empty()) {
-			if (tf->source) {
-				obs_source_skip_video_filter(tf->source);
-			}
-			return;
+		if (!tf->outputPreviewBGRA.empty() &&
+		    (uint32_t)tf->outputPreviewBGRA.cols == width &&
+		    (uint32_t)tf->outputPreviewBGRA.rows == height) {
+			outputBGRA = tf->outputPreviewBGRA.clone();
+			use_output = true;
 		}
-		if ((uint32_t)tf->outputPreviewBGRA.cols != width ||
-		    (uint32_t)tf->outputPreviewBGRA.rows != height) {
-			if (tf->source) {
-				obs_source_skip_video_filter(tf->source);
-			}
-			return;
-		}
-		outputBGRA = tf->outputPreviewBGRA.clone();
+	}
+
+	if (!use_output) {
+		obs_source_skip_video_filter(tf->source);
+		return;
 	}
 
 	gs_texture_t *tex = gs_texture_create(width, height, GS_BGRA, 1,
@@ -740,9 +741,7 @@ void detect_filter_video_render(void *data, gs_effect_t *_effect)
 
 	while (gs_technique_begin(tech)) {
 		gs_technique_begin_pass(tech, 0);
-
 		gs_draw_sprite(tex, 0, 0, 0);
-
 		gs_technique_end_pass(tech);
 	}
 	gs_technique_end(tech);
