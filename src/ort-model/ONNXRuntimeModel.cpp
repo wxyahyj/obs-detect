@@ -48,40 +48,8 @@ ONNXRuntimeModel::ONNXRuntimeModel(file_name_t path_to_model, int intra_op_num_t
 			session_options.AppendExecutionProvider_CUDA(cuda_option);
 		}
 		if (this->use_gpu == "dml") {
-			try {
-				auto &api = Ort::GetApi();
-				OrtDmlApi *dmlApi = nullptr;
-				obs_log(LOG_INFO, "Attempting to get DML execution provider API");
-				OrtStatus* status = api.GetExecutionProviderApi("DML", ORT_API_VERSION,
-				                              (const void **)&dmlApi);
-				if (status != nullptr) {
-					obs_log(LOG_ERROR, "Failed to get DML API: %s", Ort::GetApi().GetErrorMessage(status));
-					Ort::GetApi().ReleaseStatus(status);
-				} else {
-					obs_log(LOG_INFO, "Successfully got DML API");
-					if (dmlApi != nullptr) {
-						obs_log(LOG_INFO, "Attempting to append DML execution provider");
-						try {
-							// 使用 ONNX Runtime C++ API 的隐式转换运算符
-							// Base<T> 类提供了 operator contained_type*() const 运算符
-							status = dmlApi->SessionOptionsAppendExecutionProvider_DML(
-								session_options, 0);
-							if (status != nullptr) {
-								obs_log(LOG_ERROR, "Failed to append DML execution provider: %s", Ort::GetApi().GetErrorMessage(status));
-								Ort::GetApi().ReleaseStatus(status);
-							} else {
-								obs_log(LOG_INFO, "Successfully appended DML execution provider");
-							}
-						} catch (std::exception &e) {
-							obs_log(LOG_ERROR, "Exception when appending DML execution provider: %s", e.what());
-						}
-					} else {
-						obs_log(LOG_ERROR, "DML API pointer is null");
-					}
-				}
-			} catch (std::exception &e) {
-				obs_log(LOG_ERROR, "Exception in DML setup: %s", e.what());
-			}
+			obs_log(LOG_WARNING, "DirectML (DML) support is currently not available, falling back to CPU");
+			obs_log(LOG_INFO, "Please check back later for DML support updates");
 		}
 #endif
 
