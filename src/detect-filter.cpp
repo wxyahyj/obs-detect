@@ -122,7 +122,7 @@ void read_model_config_json_and_set_class_names(const char *model_file, obs_prop
 	}
 }
 
-static bool toggle_inference(void *data, obs_properties_t *props, obs_property_t *property)
+static bool toggle_inference(obs_properties_t *props, obs_property_t *property, void *data)
 {
 	UNUSED_PARAMETER(props);
 	UNUSED_PARAMETER(property);
