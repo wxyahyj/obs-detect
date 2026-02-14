@@ -516,13 +516,13 @@ void *detect_filter_create(obs_data_t *settings, obs_source_t *source)
 	void *data = bmalloc(sizeof(struct detect_filter));
 	struct detect_filter *tf = new (data) detect_filter();
 
+	// 初始化所有成员变量
 	tf->source = source;
 	tf->texrender = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
+	tf->stagesurface = nullptr;
 	tf->lastDetectedObjectId = -1;
 	tf->last_inference_time = std::chrono::steady_clock::time_point();
 	tf->inferenceEnabled = false;
-
-	// 初始化默认值
 	tf->preview = true;
 	tf->conf_threshold = 0.5f;
 	tf->objectCategory = -1;
@@ -537,6 +537,13 @@ void *detect_filter_create(obs_data_t *settings, obs_source_t *source)
 	tf->numThreads = 1;
 	tf->modelSize = "small";
 	tf->isDisabled = false;
+	tf->onnxruntimemodel = nullptr;
+
+#if _WIN32
+	tf->modelFilepath = L"";
+#else
+	tf->modelFilepath = "";
+#endif
 
 	detect_filter_update(tf, settings);
 
@@ -587,7 +594,7 @@ void detect_filter_video_tick(void *data, float seconds)
 		return;
 	}
 
-	if (!obs_source_enabled(tf->source)) {
+	if (!tf->source || !obs_source_enabled(tf->source)) {
 		return;
 	}
 
@@ -805,6 +812,7 @@ void detect_filter_video_render(void *data, gs_effect_t *_effect)
 		}
 	}
 
+	// 转换颜色空间并绘制图形
 	cv::Mat frameBGR;
 	cv::cvtColor(outputBGRA, frameBGR, cv::COLOR_BGRA2BGR);
 
@@ -822,25 +830,32 @@ void detect_filter_video_render(void *data, gs_effect_t *_effect)
 	int circle_radius = 50;
 	cv::circle(frameBGR, cv::Point(center_x, center_y), circle_radius, circle_color, 2);
 
-	cv::cvtColor(frameBGR, outputBGRA, cv::COLOR_BGR2BGRA);
+	// 创建一个新的矩阵来存储最终结果，避免修改原始数据
+	cv::Mat finalOutputBGRA;
+	cv::cvtColor(frameBGR, finalOutputBGRA, cv::COLOR_BGR2BGRA);
+	outputBGRA = finalOutputBGRA; // 更新outputBGRA为带有绘制图形的版本
 
 	if (!outputBGRA.empty() && outputBGRA.data) {
-		gs_texture_t *tex = gs_texture_create(width, height, GS_BGRA, 1,
-						      (const uint8_t **)&outputBGRA.data, 0);
-		if (tex) {
-			gs_effect_t *effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
-			gs_technique_t *tech = gs_effect_get_technique(effect, "Draw");
-			gs_eparam_t *image_param = gs_effect_get_param_by_name(effect, "image");
+		// 确保数据大小正确
+		size_t expected_size = width * height * 4; // 4 bytes per pixel for BGRA
+		if (outputBGRA.total() * outputBGRA.elemSize() >= expected_size) {
+			gs_texture_t *tex = gs_texture_create(width, height, GS_BGRA, 1,
+							      (const uint8_t **)&outputBGRA.data, 0);
+			if (tex) {
+				gs_effect_t *effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+				gs_technique_t *tech = gs_effect_get_technique(effect, "Draw");
+				gs_eparam_t *image_param = gs_effect_get_param_by_name(effect, "image");
 
-			gs_effect_set_texture(image_param, tex);
+				gs_effect_set_texture(image_param, tex);
 
-			gs_technique_begin(tech);
-			gs_technique_begin_pass(tech, 0);
-			gs_draw_sprite(tex, 0, 0, 0);
-			gs_technique_end_pass(tech);
-			gs_technique_end(tech);
+				gs_technique_begin(tech);
+				gs_technique_begin_pass(tech, 0);
+				gs_draw_sprite(tex, 0, 0, 0);
+				gs_technique_end_pass(tech);
+				gs_technique_end(tech);
 
-			gs_texture_destroy(tex);
+				gs_texture_destroy(tex);
+			}
 		}
 	}
 }
