@@ -6,6 +6,10 @@
 #include <mutex>
 #include <memory>
 #include <chrono>
+#include <thread>
+#include <atomic>
+#include <condition_variable>
+#include <queue>
 #include "ort-model/ONNXRuntimeModel.h"
 
 struct filter_data {
@@ -43,6 +47,14 @@ struct filter_data {
 
 	std::chrono::steady_clock::time_point last_inference_time;
 	static constexpr int MIN_INFERENCE_INTERVAL_MS = 100;
+
+	std::thread inference_thread;
+	std::atomic<bool> inference_thread_running;
+	std::queue<cv::Mat> frame_queue;
+	std::mutex queue_mutex;
+	std::condition_variable queue_cv;
+	std::vector<Object> latest_detections;
+	std::mutex detections_mutex;
 
 #if _WIN32
 	std::wstring modelFilepath;
