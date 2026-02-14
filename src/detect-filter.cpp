@@ -122,25 +122,13 @@ void read_model_config_json_and_set_class_names(const char *model_file, obs_prop
 	}
 }
 
-static bool toggle_inference(obs_properties_t *props, obs_property_t *property, void *data)
-{
-	UNUSED_PARAMETER(props);
-	UNUSED_PARAMETER(property);
-
-	struct detect_filter *tf = reinterpret_cast<detect_filter *>(data);
-	tf->inferenceEnabled = !tf->inferenceEnabled;
-	obs_log(LOG_INFO, "Inference %s", tf->inferenceEnabled ? "enabled" : "disabled");
-	return true;
-}
-
 obs_properties_t *detect_filter_properties(void *data)
 {
 	struct detect_filter *tf = reinterpret_cast<detect_filter *>(data);
 
 	obs_properties_t *props = obs_properties_create();
 
-	obs_property_t *inference_btn = obs_properties_add_button(props, "toggle_inference", 
-		obs_module_text("ToggleInference"), toggle_inference);
+	obs_properties_add_bool(props, "inference_enabled", obs_module_text("ToggleInference"));
 
 	obs_properties_add_bool(props, "preview", obs_module_text("Preview"));
 
@@ -284,6 +272,7 @@ obs_properties_t *detect_filter_properties(void *data)
 
 void detect_filter_defaults(obs_data_t *settings)
 {
+	obs_data_set_default_bool(settings, "inference_enabled", false);
 	obs_data_set_default_bool(settings, "advanced", false);
 #if _WIN32
 	obs_data_set_default_string(settings, "useGPU", USEGPU_DML);
@@ -312,6 +301,12 @@ void detect_filter_update(void *data, obs_data_t *settings)
 	struct detect_filter *tf = reinterpret_cast<detect_filter *>(data);
 
 	tf->isDisabled = true;
+
+	bool new_inference_enabled = obs_data_get_bool(settings, "inference_enabled");
+	if (new_inference_enabled != tf->inferenceEnabled) {
+		tf->inferenceEnabled = new_inference_enabled;
+		obs_log(LOG_INFO, "Inference %s", tf->inferenceEnabled ? "enabled" : "disabled");
+	}
 
 	tf->preview = obs_data_get_bool(settings, "preview");
 	tf->conf_threshold = (float)obs_data_get_double(settings, "threshold");
