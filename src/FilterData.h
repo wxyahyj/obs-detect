@@ -3,7 +3,6 @@
 
 #include <obs-module.h>
 #include "ort-model/ONNXRuntimeModel.h"
-#include "sort/Sort.h"
 
 /**
   * @brief The filter_data struct
@@ -19,20 +18,7 @@ struct filter_data {
 
 	int minAreaThreshold;
 	int objectCategory;
-	bool maskingEnabled;
-	std::string maskingType;
-	int maskingColor;
-	int maskingBlurRadius;
-	int maskingDilateIterations;
-	bool trackingEnabled;
-	float zoomFactor;
-	float zoomSpeedFactor;
-	std::string zoomObject;
-	obs_source_t *trackingFilter;
-	cv::Rect2f trackingRect;
 	int lastDetectedObjectId;
-	bool sortTracking;
-	bool showUnseenObjects;
 	std::string saveDetectionsPath;
 	bool crop_enabled;
 	int crop_left;
@@ -40,19 +26,12 @@ struct filter_data {
 	int crop_top;
 	int crop_bottom;
 
-	// create SORT tracker
-	Sort tracker;
-
 	obs_source_t *source;
 	gs_texrender_t *texrender;
 	gs_stagesurf_t *stagesurface;
-	gs_effect_t *kawaseBlurEffect;
-	gs_effect_t *maskingEffect;
-	gs_effect_t *pixelateEffect;
 
 	cv::Mat inputBGRA;
 	cv::Mat outputPreviewBGRA;
-	cv::Mat outputMask;
 
 	bool isDisabled;
 	bool preview;
