@@ -112,7 +112,13 @@ ONNXRuntimeModel::ONNXRuntimeModel(file_name_t path_to_model, int intra_op_num_t
 
 		this->output_shapes_.push_back(output_shape);
 
-		size_t output_byte_count = sizeof(float) * output_shape_info.GetElementCount();
+		size_t output_element_count = output_shape_info.GetElementCount();
+		if (output_element_count == 0) {
+			obs_log(LOG_WARNING, "Output %zu has element count 0, using fallback", i);
+			output_element_count = 1024 * 1024;
+		}
+		
+		size_t output_byte_count = sizeof(float) * output_element_count;
 		std::unique_ptr<uint8_t[]> output_buffer =
 			std::make_unique<uint8_t[]>(output_byte_count);
 		auto output_memory_info =
@@ -127,10 +133,11 @@ ONNXRuntimeModel::ONNXRuntimeModel(file_name_t path_to_model, int intra_op_num_t
 			std::string(this->session_.GetOutputNameAllocated(i, ort_alloc).get()));
 
 		obs_log(LOG_INFO, "Output name: %s", this->output_name_[i].c_str());
-		obs_log(LOG_INFO, "Output shape: %d %d %d %d", output_shape[0],
-			output_shape.size() > 1 ? output_shape[1] : 0,
-			output_shape.size() > 2 ? output_shape[2] : 0,
-			output_shape.size() > 3 ? output_shape[3] : 0);
+		obs_log(LOG_INFO, "Output shape dimensions: %zu", output_shape.size());
+		for (size_t j = 0; j < output_shape.size(); j++) {
+			obs_log(LOG_INFO, "  Dim %zu: %lld", j, output_shape[j]);
+		}
+		obs_log(LOG_INFO, "Output element count: %zu", output_element_count);
 	}
 }
 

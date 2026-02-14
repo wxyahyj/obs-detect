@@ -1,6 +1,12 @@
 #ifndef _EdgeYOLO_CPP_CORE_HPP
 #define _EdgeYOLO_CPP_CORE_HPP
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#endif
+
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 
@@ -23,11 +29,36 @@ public:
 				   inter_op_num_threads, use_gpu_, device_id, use_parallel, nms_th,
 				   conf_th)
 	{
-		this->num_array_ = 1;
-		for (size_t i = 0; i < this->output_shapes_[0].size(); i++) {
-			this->num_array_ *= (int)(this->output_shapes_[0][i]);
+		if (this->output_shapes_.empty()) {
+			obs_log(LOG_ERROR, "No output shapes available");
+			throw std::runtime_error("No output shapes available");
 		}
-		this->num_array_ /= (5 + this->num_classes_);
+		
+		const auto &output_shape = this->output_shapes_[0];
+		
+		obs_log(LOG_INFO, "Output shape dimensions: %zu", output_shape.size());
+		for (size_t i = 0; i < output_shape.size(); i++) {
+			obs_log(LOG_INFO, "  Dim %zu: %lld", i, output_shape[i]);
+		}
+		
+		this->num_array_ = 1;
+		for (size_t i = 0; i < output_shape.size(); i++) {
+			if (output_shape[i] <= 0) {
+				obs_log(LOG_WARNING, "Output dimension %zu is %lld, skipping", i, output_shape[i]);
+				continue;
+			}
+			this->num_array_ *= (int)(output_shape[i]);
+		}
+		
+		const int elements_per_box = 5 + this->num_classes_;
+		if (this->num_array_ % elements_per_box != 0) {
+			obs_log(LOG_WARNING, "Total elements %d not divisible by %d, using raw count", 
+				this->num_array_, elements_per_box);
+		} else {
+			this->num_array_ /= elements_per_box;
+		}
+		
+		obs_log(LOG_INFO, "Calculated num_array: %d", this->num_array_);
 	}
 
 protected:
@@ -36,6 +67,14 @@ protected:
 	void generate_edgeyolo_proposals(const int num_array, const float *feat_ptr,
 					 const float prob_threshold, std::vector<Object> &objects)
 	{
+		if (num_array <= 0) {
+			obs_log(LOG_ERROR, "Invalid num_array: %d", num_array);
+			return;
+		}
+		if (feat_ptr == nullptr) {
+			obs_log(LOG_ERROR, "feat_ptr is null");
+			return;
+		}
 
 		for (int idx = 0; idx < num_array; ++idx) {
 			const int basic_pos = idx * (num_classes_ + 5);
@@ -75,6 +114,18 @@ protected:
 			    const float bbox_conf_thresh, const float scale, const int img_w,
 			    const int img_h)
 	{
+		if (prob == nullptr) {
+			obs_log(LOG_ERROR, "prob is null");
+			return;
+		}
+		if (num_array <= 0) {
+			obs_log(LOG_ERROR, "Invalid num_array: %d", num_array);
+			return;
+		}
+		if (img_w <= 0 || img_h <= 0) {
+			obs_log(LOG_ERROR, "Invalid image dimensions: %dx%d", img_w, img_h);
+			return;
+		}
 
 		std::vector<Object> proposals;
 		generate_edgeyolo_proposals(num_array, prob, bbox_conf_thresh, proposals);
@@ -88,7 +139,6 @@ protected:
 		objects.clear();
 
 		for (int i = 0; i < count; ++i) {
-			// adjust offset to original unpadded
 			float x0 = (proposals[picked[i]].rect.x) / scale;
 			float y0 = (proposals[picked[i]].rect.y) / scale;
 			float x1 = (proposals[picked[i]].rect.x + proposals[picked[i]].rect.width) /
@@ -97,11 +147,10 @@ protected:
 				(proposals[picked[i]].rect.y + proposals[picked[i]].rect.height) /
 				scale;
 
-			// clip
-			x0 = std::max(std::min(x0, (float)(img_w - 1)), 0.f);
-			y0 = std::max(std::min(y0, (float)(img_h - 1)), 0.f);
-			x1 = std::max(std::min(x1, (float)(img_w - 1)), 0.f);
-			y1 = std::max(std::min(y1, (float)(img_h - 1)), 0.f);
+			x0 = (std::max)((std::min)(x0, (float)(img_w - 1)), 0.f);
+			y0 = (std::max)((std::min)(y0, (float)(img_h - 1)), 0.f);
+			x1 = (std::max)((std::min)(x1, (float)(img_w - 1)), 0.f);
+			y1 = (std::max)((std::min)(y1, (float)(img_h - 1)), 0.f);
 
 			proposals[picked[i]].rect.x = x0;
 			proposals[picked[i]].rect.y = y0;

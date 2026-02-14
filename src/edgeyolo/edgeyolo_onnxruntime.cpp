@@ -1,6 +1,9 @@
 #include "edgeyolo_onnxruntime.hpp"
 
 #ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <dml_provider_factory.h>
 #endif
 
@@ -19,11 +22,24 @@ std::vector<Object> EdgeYOLOONNXRuntime::inference(const cv::Mat &frame)
 {
 	ONNXRuntimeModel::inference(frame, 0);
 
-	float *net_pred = (float *)this->output_buffer_[0].get();
+	if (this->output_buffer_.empty()) {
+		obs_log(LOG_ERROR, "Output buffer is empty");
+		return {};
+	}
 
-	// post process
-	float scale = std::fminf((float)input_w_[0] / (float)frame.cols,
-				 (float)input_h_[0] / (float)frame.rows);
+	float *net_pred = (float *)this->output_buffer_[0].get();
+	if (net_pred == nullptr) {
+		obs_log(LOG_ERROR, "Net prediction is null");
+		return {};
+	}
+
+	if (this->num_array_ <= 0) {
+		obs_log(LOG_ERROR, "Invalid num_array: %d", this->num_array_);
+		return {};
+	}
+
+	float scale = std::min((float)input_w_[0] / (float)frame.cols,
+			     (float)input_h_[0] / (float)frame.rows);
 	std::vector<Object> objects;
 	decode_outputs(net_pred, this->num_array_, objects, this->bbox_conf_thresh_, scale,
 		       frame.cols, frame.rows);
