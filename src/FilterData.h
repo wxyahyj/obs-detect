@@ -6,6 +6,10 @@
 #include <mutex>
 #include <memory>
 #include <chrono>
+#include <thread>
+#include <queue>
+#include <condition_variable>
+#include <atomic>
 #include "ort-model/ONNXRuntimeModel.h"
 
 struct filter_data {
@@ -50,6 +54,14 @@ struct filter_data {
 #else
 	std::string modelFilepath;
 #endif
+
+	// 异步推理相关
+	std::thread inference_thread;
+	std::queue<cv::Mat> frame_queue;
+	std::mutex queue_mutex;
+	std::condition_variable queue_condition;
+	std::atomic<bool> should_stop{false};
+	std::atomic<bool> thread_running{false};
 };
 
 #endif /* FILTERDATA_H */

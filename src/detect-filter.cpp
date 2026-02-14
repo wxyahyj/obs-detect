@@ -486,7 +486,8 @@ void detect_filter_update(void *data, obs_data_t *settings)
 		tf->isDisabled = false;
 	}
 	
-	// 恢复推理启用状态
+	// 恢复推理启用状态 - 这个变量在tick函数中会被读取，所以不需要特殊保护
+	// 因为简单的布尔赋值是原子操作
 	tf->inferenceEnabled = new_inference_enabled;
 	}
 
@@ -538,6 +539,8 @@ void *detect_filter_create(obs_data_t *settings, obs_source_t *source)
 	tf->modelSize = "small";
 	tf->isDisabled = false;
 	tf->onnxruntimemodel = nullptr;
+	tf->should_stop = false;
+	tf->thread_running = false;
 
 #if _WIN32
 	tf->modelFilepath = L"";
@@ -546,6 +549,14 @@ void *detect_filter_create(obs_data_t *settings, obs_source_t *source)
 #endif
 
 	detect_filter_update(tf, settings);
+
+	// 启动推理线程
+	try {
+		tf->inference_thread = std::thread(inference_worker, tf);
+		obs_log(LOG_INFO, "Inference thread started successfully");
+	} catch (const std::exception &e) {
+		obs_log(LOG_ERROR, "Failed to start inference thread: %s", e.what());
+	}
 
 	return tf;
 }
@@ -558,6 +569,29 @@ void detect_filter_destroy(void *data)
 
 	if (tf) {
 		tf->isDisabled = true;
+		tf->should_stop = true;  // 设置停止标志
+
+		// 唤醒推理线程（以防它正在等待）
+		{
+			std::lock_guard<std::mutex> lock(tf->queue_mutex);
+			tf->queue_condition.notify_all();
+		}
+
+		// 等待推理线程结束
+		if (tf->inference_thread.joinable()) {
+			try {
+				tf->inference_thread.join();
+				obs_log(LOG_INFO, "Inference thread joined successfully");
+			} catch (const std::exception &e) {
+				obs_log(LOG_ERROR, "Error joining inference thread: %s", e.what());
+			}
+		}
+
+		// 等待模型不再被使用后再清理
+		{
+			std::unique_lock<std::mutex> lock(tf->modelMutex);
+			tf->onnxruntimemodel.reset();  // 显式重置模型
+		}
 
 		obs_enter_graphics();
 		if (tf->texrender) {
@@ -571,6 +605,158 @@ void detect_filter_destroy(void *data)
 		tf->~detect_filter();
 		bfree(tf);
 	}
+}
+
+// 异步推理线程函数
+void inference_worker(struct detect_filter *tf)
+{
+	obs_log(LOG_INFO, "Starting inference worker thread");
+	tf->thread_running = true;
+	
+	while (!tf->should_stop) {
+		cv::Mat frame;
+		{
+			std::unique_lock<std::mutex> lock(tf->queue_mutex);
+			if (tf->frame_queue.empty()) {
+				// 等待新帧或停止信号
+				tf->queue_condition.wait(lock, [&tf] { 
+					return !tf->frame_queue.empty() || tf->should_stop.load(); 
+				});
+				
+				if (tf->should_stop && tf->frame_queue.empty()) {
+					break;
+				}
+			}
+			
+			if (!tf->frame_queue.empty()) {
+				frame = tf->frame_queue.front();
+				tf->frame_queue.pop();
+			}
+		}
+		
+		if (!frame.empty()) {
+			// 执行推理
+			std::vector<Object> objects;
+			
+			{
+				// 使用模型进行推理
+				std::unique_lock<std::mutex> lock(tf->modelMutex, std::try_to_lock);
+				if (lock.owns_lock() && tf->onnxruntimemodel) {
+					try {
+						cv::Mat inferenceFrame;
+						cv::Rect cropRect(0, 0, frame.cols, frame.rows);
+						if (tf->crop_enabled) {
+							cropRect = cv::Rect(tf->crop_left, tf->crop_top,
+									    frame.cols - tf->crop_left - tf->crop_right,
+									    frame.rows - tf->crop_top - tf->crop_bottom);
+							cv::cvtColor(frame(cropRect), inferenceFrame, cv::COLOR_BGRA2BGR);
+						} else {
+							cv::cvtColor(frame, inferenceFrame, cv::COLOR_BGRA2BGR);
+						}
+
+						// 设置置信度阈值
+						tf->onnxruntimemodel->setBBoxConfThresh(tf->conf_threshold);
+						objects = tf->onnxruntimemodel->inference(inferenceFrame);
+						tf->last_inference_time = std::chrono::steady_clock::now();
+
+						obs_log(LOG_INFO, "Inference returned %d objects (before filtering)", objects.size());
+
+						if (tf->crop_enabled) {
+							for (Object &obj : objects) {
+								obj.rect.x += (float)cropRect.x;
+								obj.rect.y += (float)cropRect.y;
+							}
+						}
+
+						if (tf->objectCategory != -1) {
+							std::vector<Object> filtered_objects;
+							for (const Object &obj : objects) {
+								if (obj.label == tf->objectCategory) {
+									filtered_objects.push_back(obj);
+								}
+							}
+							objects = filtered_objects;
+							obs_log(LOG_INFO, "After category filter: %d objects", objects.size());
+						}
+
+						if (!tf->saveDetectionsPath.empty()) {
+							std::ofstream detectionsFile(tf->saveDetectionsPath);
+							if (detectionsFile.is_open()) {
+								nlohmann::json j;
+								for (const Object &obj : objects) {
+									nlohmann::json obj_json;
+									obj_json["label"] = obj.label;
+									obj_json["confidence"] = obj.prob;
+									obj_json["rect"] = {{"x", obj.rect.x},
+											    {"y", obj.rect.y},
+											    {"width", obj.rect.width},
+											    {"height", obj.rect.height}};
+									obj_json["id"] = obj.id;
+									j.push_back(obj_json);
+								}
+								detectionsFile << j.dump(4);
+								detectionsFile.close();
+							}
+						}
+					} catch (const std::exception &e) {
+						obs_log(LOG_ERROR, "Inference error: %s", e.what());
+					}
+				}
+			}
+			
+			// 处理检测结果
+			if (objects.size() > 0 && tf->lastDetectedObjectId != objects[0].label) {
+				tf->lastDetectedObjectId = objects[0].label;
+				obs_source_t *source = tf->source;
+				if (source) {
+					obs_data_t *source_settings = obs_source_get_settings(source);
+					if (source_settings) {
+						obs_data_set_string(source_settings, "detected_object",
+								    tf->classNames[objects[0].label].c_str());
+						obs_data_release(source_settings);
+					}
+				}
+			} else if (objects.empty() && tf->lastDetectedObjectId != -1) {
+				tf->lastDetectedObjectId = -1;
+				obs_source_t *source = tf->source;
+				if (source) {
+					obs_data_t *source_settings = obs_source_get_settings(source);
+					if (source_settings) {
+						obs_data_set_string(source_settings, "detected_object", "");
+						obs_data_release(source_settings);
+					}
+				}
+			}
+			
+			// 绘制检测结果
+			if (tf->preview) {
+				cv::Mat result_frame = frame.clone();
+				cv::Mat draw_frame;
+				cv::cvtColor(result_frame, draw_frame, cv::COLOR_BGRA2BGR);
+
+				cv::Rect cropRect(0, 0, frame.cols, frame.rows);
+				if (tf->crop_enabled) {
+					cropRect = cv::Rect(tf->crop_left, tf->crop_top,
+							    frame.cols - tf->crop_left - tf->crop_right,
+							    frame.rows - tf->crop_top - tf->crop_bottom);
+					drawDashedRectangle(draw_frame, cropRect, cv::Scalar(0, 255, 0), 5, 8, 15);
+				}
+				
+				if (objects.size() > 0) {
+					draw_objects(draw_frame, objects, tf->classNames);
+					obs_log(LOG_INFO, "Drew %d boxes on frame", objects.size());
+				}
+
+				{
+					std::lock_guard<std::mutex> lock(tf->outputLock);
+					cv::cvtColor(draw_frame, tf->outputPreviewBGRA, cv::COLOR_BGR2BGRA);
+				}
+			}
+		}
+	}
+	
+	obs_log(LOG_INFO, "Stopping inference worker thread");
+	tf->thread_running = false;
 }
 
 void detect_filter_video_tick(void *data, float seconds)
@@ -621,138 +807,26 @@ void detect_filter_video_tick(void *data, float seconds)
 		return;
 	}
 
-	bool inference_ran = false;
-	bool drew_boxes = false;
-	
+	// 将帧添加到推理队列（仅当推理启用且队列未满时）
 	if (tf->inferenceEnabled) {
 		auto now = std::chrono::steady_clock::now();
 		auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
 			now - tf->last_inference_time).count();
 		
 		if (elapsed_ms >= tf->MIN_INFERENCE_INTERVAL_MS) {
-			obs_log(LOG_INFO, "Running inference...");
-			
-			cv::Mat inferenceFrame;
-
-			cv::Rect cropRect(0, 0, imageBGRA.cols, imageBGRA.rows);
-			if (tf->crop_enabled) {
-				cropRect = cv::Rect(tf->crop_left, tf->crop_top,
-						    imageBGRA.cols - tf->crop_left - tf->crop_right,
-						    imageBGRA.rows - tf->crop_top - tf->crop_bottom);
-				cv::cvtColor(imageBGRA(cropRect), inferenceFrame, cv::COLOR_BGRA2BGR);
-			} else {
-				cv::cvtColor(imageBGRA, inferenceFrame, cv::COLOR_BGRA2BGR);
-			}
-
-			std::vector<Object> objects;
-
-			try {
-				std::unique_lock<std::mutex> lock(tf->modelMutex, std::try_to_lock);
-				if (lock.owns_lock()) {
-					tf->onnxruntimemodel->setBBoxConfThresh(0.0f);
-					objects = tf->onnxruntimemodel->inference(inferenceFrame);
-					tf->last_inference_time = now;
-					inference_ran = true;
-
-					obs_log(LOG_INFO, "Inference returned %d objects (before filtering)", objects.size());
-
-					if (tf->crop_enabled) {
-						for (Object &obj : objects) {
-							obj.rect.x += (float)cropRect.x;
-							obj.rect.y += (float)cropRect.y;
-						}
-					}
-
-					if (objects.size() > 0) {
-						if (tf->lastDetectedObjectId != objects[0].label) {
-							tf->lastDetectedObjectId = objects[0].label;
-							obs_data_t *source_settings = obs_source_get_settings(tf->source);
-							obs_data_set_string(source_settings, "detected_object",
-									    tf->classNames[objects[0].label].c_str());
-							obs_data_release(source_settings);
-						}
-					} else {
-						if (tf->lastDetectedObjectId != -1) {
-							tf->lastDetectedObjectId = -1;
-							obs_data_t *source_settings = obs_source_get_settings(tf->source);
-							obs_data_set_string(source_settings, "detected_object", "");
-							obs_data_release(source_settings);
-						}
-					}
-
-					if (tf->objectCategory != -1) {
-						std::vector<Object> filtered_objects;
-						for (const Object &obj : objects) {
-							if (obj.label == tf->objectCategory) {
-								filtered_objects.push_back(obj);
-							}
-						}
-						objects = filtered_objects;
-						obs_log(LOG_INFO, "After category filter: %d objects", objects.size());
-					}
-
-					if (!tf->saveDetectionsPath.empty()) {
-						std::ofstream detectionsFile(tf->saveDetectionsPath);
-						if (detectionsFile.is_open()) {
-							nlohmann::json j;
-							for (const Object &obj : objects) {
-								nlohmann::json obj_json;
-								obj_json["label"] = obj.label;
-								obj_json["confidence"] = obj.prob;
-								obj_json["rect"] = {{"x", obj.rect.x},
-										    {"y", obj.rect.y},
-										    {"width", obj.rect.width},
-										    {"height", obj.rect.height}};
-								obj_json["id"] = obj.id;
-								j.push_back(obj_json);
-							}
-							detectionsFile << j.dump(4);
-							detectionsFile.close();
-						}
-					}
-
-					if (tf->preview) {
-						cv::Mat frame;
-						cv::cvtColor(imageBGRA, frame, cv::COLOR_BGRA2BGR);
-
-						if (tf->crop_enabled) {
-							drawDashedRectangle(frame, cropRect, cv::Scalar(0, 255, 0), 5, 8, 15);
-						}
-						
-						if (objects.size() > 0) {
-							draw_objects(frame, objects, tf->classNames);
-							drew_boxes = true;
-							obs_log(LOG_INFO, "Drew %d boxes on frame", objects.size());
-						}
-
-						std::lock_guard<std::mutex> lock_output(tf->outputLock);
-						cv::cvtColor(frame, tf->outputPreviewBGRA, cv::COLOR_BGR2BGRA);
-					}
-
-					if (objects.size() > 0) {
-						obs_log(LOG_INFO, "Final detected %d objects:", objects.size());
-						for (const auto &obj : objects) {
-							obs_log(LOG_INFO, "  - %s (%.2f) at [%.0f, %.0f, %.0f, %.0f]",
-								tf->classNames[obj.label].c_str(), obj.prob,
-								obj.rect.x, obj.rect.y, obj.rect.width, obj.rect.height);
-						}
-					} else {
-						obs_log(LOG_INFO, "No objects detected");
-					}
-				} else {
-					obs_log(LOG_WARNING, "Could not acquire model mutex, skipping inference");
+			// 检查队列大小，避免无限增长
+			{
+				std::lock_guard<std::mutex> lock(tf->queue_mutex);
+				// 只保留最新的一帧，丢弃旧帧以避免延迟
+				while (tf->frame_queue.size() > 1) {
+					tf->frame_queue.pop();
 				}
-			} catch (const Ort::Exception &e) {
-				obs_log(LOG_ERROR, "ONNXRuntime Exception: %s", e.what());
-			} catch (const std::exception &e) {
-				obs_log(LOG_ERROR, "Exception: %s", e.what());
+				// 添加新帧到队列
+				tf->frame_queue.push(imageBGRA.clone());
 			}
+			// 通知推理线程有新帧可用
+			tf->queue_condition.notify_one();
 		}
-	}
-
-	if ((!inference_ran || !drew_boxes) && tf->preview) {
-		std::lock_guard<std::mutex> lock(tf->outputLock);
-		tf->outputPreviewBGRA = imageBGRA.clone();
 	}
 }
 
@@ -784,32 +858,27 @@ void detect_filter_video_render(void *data, gs_effect_t *_effect)
 		return;
 	}
 
+	// 获取预览输出或原始输入
 	cv::Mat outputBGRA;
-	bool use_output = false;
 	{
 		std::lock_guard<std::mutex> lock(tf->outputLock);
 		if (!tf->outputPreviewBGRA.empty() &&
 		    (uint32_t)tf->outputPreviewBGRA.cols == width &&
 		    (uint32_t)tf->outputPreviewBGRA.rows == height) {
-			outputBGRA = tf->outputPreviewBGRA.clone();
-			use_output = true;
+			outputBGRA = tf->outputPreviewBGRA.clone(); // 使用处理后的图像（带检测框）
+		} else {
+			// 如果没有预览输出，则尝试使用输入图像
+			std::lock_guard<std::mutex> lock_input(tf->inputBGRALock);
+			if (!tf->inputBGRA.empty()) {
+				outputBGRA = tf->inputBGRA.clone();
+			}
 		}
 	}
 
-	if (!use_output) {
-		if (!getRGBAFromStageSurface(tf, width, height)) {
-			obs_source_skip_video_filter(tf->source);
-			return;
-		}
-		
-		{
-			std::lock_guard<std::mutex> lock(tf->inputBGRALock);
-			if (tf->inputBGRA.empty()) {
-				obs_source_skip_video_filter(tf->source);
-				return;
-			}
-			outputBGRA = tf->inputBGRA.clone();
-		}
+	// 如果仍然没有图像数据，则跳过过滤器
+	if (outputBGRA.empty()) {
+		obs_source_skip_video_filter(tf->source);
+		return;
 	}
 
 	// 转换颜色空间并绘制图形
@@ -833,14 +902,13 @@ void detect_filter_video_render(void *data, gs_effect_t *_effect)
 	// 创建一个新的矩阵来存储最终结果，避免修改原始数据
 	cv::Mat finalOutputBGRA;
 	cv::cvtColor(frameBGR, finalOutputBGRA, cv::COLOR_BGR2BGRA);
-	outputBGRA = finalOutputBGRA; // 更新outputBGRA为带有绘制图形的版本
 
-	if (!outputBGRA.empty() && outputBGRA.data) {
+	if (!finalOutputBGRA.empty() && finalOutputBGRA.data) {
 		// 确保数据大小正确
 		size_t expected_size = width * height * 4; // 4 bytes per pixel for BGRA
-		if (outputBGRA.total() * outputBGRA.elemSize() >= expected_size) {
+		if (finalOutputBGRA.total() * finalOutputBGRA.elemSize() >= expected_size) {
 			gs_texture_t *tex = gs_texture_create(width, height, GS_BGRA, 1,
-							      (const uint8_t **)&outputBGRA.data, 0);
+							      (const uint8_t **)&finalOutputBGRA.data, 0);
 			if (tex) {
 				gs_effect_t *effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
 				gs_technique_t *tech = gs_effect_get_technique(effect, "Draw");
