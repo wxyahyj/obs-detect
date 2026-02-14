@@ -34,6 +34,9 @@
 
 struct detect_filter : public filter_data {};
 
+// 异步推理线程函数声明
+void inference_worker(struct detect_filter *tf);
+
 const char *detect_filter_getname(void *unused)
 {
 	UNUSED_PARAMETER(unused);
