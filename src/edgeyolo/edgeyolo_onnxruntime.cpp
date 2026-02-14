@@ -1,12 +1,5 @@
 #include "edgeyolo_onnxruntime.hpp"
 
-#ifdef _WIN32
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <dml_provider_factory.h>
-#endif
-
 namespace edgeyolo_cpp {
 
 EdgeYOLOONNXRuntime::EdgeYOLOONNXRuntime(file_name_t path_to_model, int intra_op_num_threads,
